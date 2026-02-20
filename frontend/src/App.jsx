@@ -10,23 +10,23 @@ const formatCurrency = (value) => {
 
 const PipelineSteps = () => {
   const steps = [
-    { icon: '📄', label: 'PDF Ingestion' },
-    { icon: '🔍', label: 'OCR Extraction' },
-    { icon: '🛡️', label: 'PII Detection' },
-    { icon: '🔒', label: 'Data Sanitization' },
-    { icon: '🤖', label: 'AI Extraction' },
-    { icon: '📊', label: 'Financial Analysis' },
-    { icon: '📋', label: 'Final Report' },
+    'PDF Ingestion',
+    'OCR Extraction',
+    'PII Detection',
+    'Sanitization',
+    'AI Extraction',
+    'Financial Analysis',
+    'Report',
   ]
   return (
     <div className="pipeline-steps">
-      {steps.map((step, i) => (
+      {steps.map((label, i) => (
         <span key={i} style={{ display: 'contents' }}>
-          <div className={`pipeline-step active`}>
-            <span className="step-icon">{step.icon}</span>
-            {step.label}
+          <div className="pipeline-step active">
+            <span className="step-num">{i + 1}</span>
+            {label}
           </div>
-          {i < steps.length - 1 && <span className="pipeline-arrow">→</span>}
+          {i < steps.length - 1 && <span className="pipeline-arrow">/</span>}
         </span>
       ))}
     </div>
@@ -38,30 +38,33 @@ const StatsGrid = ({ data }) => {
   const analysis = data.financial_analysis || {}
   const piiStats = data.pii_stats || {}
 
+  const capGains = (k1.net_long_term_capital_gain ?? k1.long_term_capital_gains ?? 0) +
+    (k1.net_short_term_capital_gain ?? k1.short_term_capital_gains ?? 0)
+
   return (
     <div className="stats-grid">
       <div className="stat-card">
         <div className="stat-label">Total Income</div>
-        <div className="stat-value green">
+        <div className={`stat-value ${(analysis.total_income || k1.ordinary_business_income || 0) >= 0 ? 'positive' : 'negative'}`}>
           {formatCurrency(analysis.total_income || k1.ordinary_business_income)}
         </div>
         <div className="stat-sub">Ordinary + Capital + Other</div>
       </div>
       <div className="stat-card">
         <div className="stat-label">Net Capital Gains</div>
-        <div className={`stat-value ${((k1.net_long_term_capital_gain ?? k1.long_term_capital_gains ?? 0) + (k1.net_short_term_capital_gain ?? k1.short_term_capital_gains ?? 0)) >= 0 ? 'green' : 'red'}`}>
-          {formatCurrency((k1.net_long_term_capital_gain ?? k1.long_term_capital_gains ?? 0) + (k1.net_short_term_capital_gain ?? k1.short_term_capital_gains ?? 0))}
+        <div className={`stat-value ${capGains >= 0 ? 'positive' : 'negative'}`}>
+          {formatCurrency(capGains)}
         </div>
         <div className="stat-sub">Long-term + Short-term</div>
       </div>
       <div className="stat-card">
         <div className="stat-label">PII Entities Detected</div>
-        <div className="stat-value amber">{piiStats.total_entities || piiStats.total_entities_detected || 0}</div>
+        <div className="stat-value">{piiStats.total_entities || piiStats.total_entities_detected || 0}</div>
         <div className="stat-sub">{Object.keys(piiStats.entity_types || piiStats.entity_counts || {}).length} types identified</div>
       </div>
       <div className="stat-card">
         <div className="stat-label">Ending Capital</div>
-        <div className="stat-value blue">
+        <div className="stat-value">
           {formatCurrency(k1.capital_account_ending || k1.ending_capital_account)}
         </div>
         <div className="stat-sub">Partner capital account</div>
@@ -89,7 +92,7 @@ const FinancialDataCard = ({ k1 }) => {
   return (
     <div className="card">
       <div className="card-header">
-        <h2>📊 Extracted K-1 Financial Data</h2>
+        <h2>Extracted K-1 Financial Data</h2>
         <span className="tag financial">AI Extracted</span>
       </div>
       <div className="card-body">
@@ -106,8 +109,8 @@ const FinancialDataCard = ({ k1 }) => {
           </tbody>
         </table>
         {(k1.capital_account_beginning != null || k1.beginning_capital_account != null) && (
-          <div className="capital-bar">
-            <h3 style={{ fontSize: '0.85rem', marginTop: '1.25rem', marginBottom: '0.75rem', color: 'var(--text-secondary)' }}>
+          <div style={{ marginTop: '1.25rem' }}>
+            <h3 style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Capital Account Movement
             </h3>
             <CapitalAccountBar k1={k1} />
@@ -129,9 +132,9 @@ const CapitalAccountBar = ({ k1 }) => {
   if (total === 0) return null
 
   const segments = [
-    { label: 'Beginning', value: beginning, color: 'var(--accent-blue)' },
-    { label: 'Contributed', value: contributed, color: 'var(--accent-cyan)' },
-    { label: 'Increase', value: increase, color: 'var(--accent-green)' },
+    { label: 'Beginning', value: beginning, color: 'var(--navy)' },
+    { label: 'Contributed', value: contributed, color: 'var(--navy-500)' },
+    { label: 'Increase', value: increase, color: 'var(--navy-400)' },
   ]
 
   return (
@@ -158,7 +161,7 @@ const CapitalAccountBar = ({ k1 }) => {
           </div>
         ))}
         <div className="capital-legend-item">
-          <div className="capital-legend-dot" style={{ background: 'var(--accent-red)' }} />
+          <div className="capital-legend-dot" style={{ background: 'var(--negative)' }} />
           Distributions: -{formatCurrency(distributions)}
         </div>
         <div className="capital-legend-item" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
@@ -173,38 +176,24 @@ const PIICard = ({ piiStats }) => {
   if (!piiStats) return null
 
   const entityTypes = piiStats.entity_types || piiStats.entity_counts || {}
-  const typeIcons = {
-    PERSON: '👤',
-    US_SSN: '🔢',
-    LOCATION: '📍',
-    PHONE_NUMBER: '📞',
-    EMAIL_ADDRESS: '📧',
-    CREDIT_CARD: '💳',
-    EIN: '🏢',
-    NRP: '🏷️',
-    DATE_TIME: '📅',
-  }
-
   const sortedTypes = Object.entries(entityTypes).sort((a, b) => b[1] - a[1])
 
   return (
     <div className="card">
       <div className="card-header">
-        <h2>🛡️ PII Detection Report</h2>
+        <h2>PII Detection Report</h2>
         <span className="tag compliance">Compliance</span>
       </div>
       <div className="card-body">
         <div className="pii-entities">
           {sortedTypes.map(([type, count]) => (
             <div key={type} className="pii-entity">
-              <span className="pii-entity-type">
-                {typeIcons[type] || '🔒'} {type.replace(/_/g, ' ')}
-              </span>
-              <span className="pii-entity-count">{count} found</span>
+              <span className="pii-entity-type">{type.replace(/_/g, ' ')}</span>
+              <span className="pii-entity-count">{count}</span>
             </div>
           ))}
           {sortedTypes.length === 0 && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No PII entities detected</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>No PII entities detected</p>
           )}
         </div>
       </div>
@@ -216,29 +205,19 @@ const PIIComparisonCard = ({ comparison }) => {
   if (!comparison) return null
 
   const modes = [
-    { key: 'presidio_only', label: 'Presidio', color: 'var(--accent-blue)' },
-    { key: 'gliner_only', label: 'GLiNER', color: 'var(--accent-purple)' },
-    { key: 'combined', label: 'Combined', color: 'var(--accent-green)' },
+    { key: 'presidio_only', label: 'Presidio', color: 'var(--navy)' },
+    { key: 'gliner_only', label: 'GLiNER', color: 'var(--navy-500)' },
+    { key: 'combined', label: 'Combined', color: 'var(--navy-400)' },
   ]
 
-  const typeIcons = {
-    PERSON: '👤', US_SSN: '🔢', LOCATION: '📍', PHONE_NUMBER: '📞',
-    EMAIL_ADDRESS: '📧', CREDIT_CARD: '💳', EIN: '🏢', ADDRESS: '🏠',
-    DATE_TIME: '📅', US_DRIVER_LICENSE: '🪪', NRP: '🏷️', CRYPTO: '🪙',
-    PASSPORT: '🛂', DATE_OF_BIRTH: '🎂',
-  }
-
-  // Collect all entity types across all modes
   const allTypes = [...new Set(
     modes.flatMap(m => Object.keys(comparison[m.key]?.counts || {}))
   )].sort()
 
-  // Find the max count for bar scaling
   const maxCount = Math.max(
     ...modes.map(m => comparison[m.key]?.total || 0), 1
   )
 
-  // Entity-level details for the expandable detail section
   const getEntities = (modeKey) => {
     return (comparison[modeKey]?.entities || [])
       .filter(e => e.score >= 0.4)
@@ -248,15 +227,14 @@ const PIIComparisonCard = ({ comparison }) => {
   return (
     <div className="card full-width">
       <div className="card-header">
-        <h2>🔬 PII Detection: Model Comparison</h2>
+        <h2>PII Detection — Model Comparison</h2>
         <span className="tag compliance">Presidio vs GLiNER</span>
       </div>
       <div className="card-body">
-        {/* --- Total entity bars --- */}
         <div className="comp-totals">
           {modes.map(m => (
             <div key={m.key} className="comp-total-row">
-              <div className="comp-total-label" style={{ color: m.color }}>{m.label}</div>
+              <div className="comp-total-label">{m.label}</div>
               <div className="comp-total-bar-track">
                 <div
                   className="comp-total-bar-fill"
@@ -266,20 +244,19 @@ const PIIComparisonCard = ({ comparison }) => {
                   }}
                 />
               </div>
-              <div className="comp-total-count" style={{ color: m.color }}>
+              <div className="comp-total-count">
                 {comparison[m.key]?.total || 0}
               </div>
             </div>
           ))}
         </div>
 
-        {/* --- Entity type breakdown table --- */}
         <table className="comp-table">
           <thead>
             <tr>
               <th>Entity Type</th>
               {modes.map(m => (
-                <th key={m.key} style={{ color: m.color }}>{m.label}</th>
+                <th key={m.key}>{m.label}</th>
               ))}
             </tr>
           </thead>
@@ -289,10 +266,7 @@ const PIIComparisonCard = ({ comparison }) => {
               const rowMax = Math.max(...cells, 1)
               return (
                 <tr key={type}>
-                  <td className="comp-type-cell">
-                    <span className="comp-type-icon">{typeIcons[type] || '🔒'}</span>
-                    {type.replace(/_/g, ' ')}
-                  </td>
+                  <td className="comp-type-cell">{type.replace(/_/g, ' ')}</td>
                   {modes.map((m, i) => (
                     <td key={m.key}>
                       <div className="comp-cell">
@@ -315,20 +289,19 @@ const PIIComparisonCard = ({ comparison }) => {
           </tbody>
         </table>
 
-        {/* --- Detected snippets per mode --- */}
         <div className="comp-details">
           {modes.map(m => {
             const entities = getEntities(m.key)
             return (
               <div key={m.key} className="comp-detail-col">
-                <h4 style={{ color: m.color, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
+                <div className="comp-detail-heading">
                   {m.label} — {entities.length} high-confidence
-                </h4>
+                </div>
                 <div className="comp-snippet-list">
                   {entities.map((e, i) => (
                     <div key={i} className="comp-snippet" style={{ borderLeftColor: m.color }}>
-                      <span className="comp-snippet-type">{typeIcons[e.entity_type] || '🔒'} {e.entity_type}</span>
-                      <code className="comp-snippet-text">{e.text_snippet.replace(/\n/g, '↵').slice(0, 40)}</code>
+                      <span className="comp-snippet-type">{e.entity_type}</span>
+                      <code className="comp-snippet-text">{e.text_snippet.replace(/\n/g, ' ').slice(0, 40)}</code>
                       <span className="comp-snippet-score">{(e.score * 100).toFixed(0)}%</span>
                     </div>
                   ))}
@@ -348,15 +321,13 @@ const AnalysisCard = ({ analysis }) => {
   return (
     <div className="card full-width">
       <div className="card-header">
-        <h2>🤖 AI Financial Analysis</h2>
-        <span className="tag ai">DeepSeek AI</span>
+        <h2>AI Financial Analysis</h2>
+        <span className="tag ai">DeepSeek</span>
       </div>
       <div className="card-body">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
           <div>
-            <h3 style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
-              Key Observations
-            </h3>
+            <div className="analysis-section-heading">Key Observations</div>
             <div className="analysis-list">
               {(analysis.key_observations || []).map((obs, i) => (
                 <div key={i} className="analysis-item">{obs}</div>
@@ -364,33 +335,31 @@ const AnalysisCard = ({ analysis }) => {
             </div>
           </div>
           <div>
-            <h3 style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
-              Tax Planning Recommendations
-            </h3>
+            <div className="analysis-section-heading">Tax Planning Recommendations</div>
             <div className="analysis-list">
               {(analysis.tax_planning_recommendations || []).map((rec, i) => (
-                <div key={i} className="analysis-item recommendation">{rec}</div>
+                <div key={i} className="analysis-item">{rec}</div>
               ))}
             </div>
           </div>
         </div>
         {(analysis.total_income != null || analysis.net_taxable_income != null) && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border)' }}>
+          <div className="analysis-totals">
             <div className="meta-item">
               <div className="meta-label">Total Income</div>
-              <div className="meta-value" style={{ color: 'var(--accent-green)' }}>{formatCurrency(analysis.total_income)}</div>
+              <div className="meta-value" style={{ color: 'var(--positive)' }}>{formatCurrency(analysis.total_income)}</div>
             </div>
             <div className="meta-item">
               <div className="meta-label">Total Deductions</div>
-              <div className="meta-value" style={{ color: 'var(--accent-red)' }}>{formatCurrency(analysis.total_deductions)}</div>
+              <div className="meta-value" style={{ color: 'var(--negative)' }}>{formatCurrency(analysis.total_deductions)}</div>
             </div>
             <div className="meta-item">
               <div className="meta-label">Net Taxable</div>
-              <div className="meta-value" style={{ color: 'var(--accent-blue)' }}>{formatCurrency(analysis.net_taxable_income)}</div>
+              <div className="meta-value">{formatCurrency(analysis.net_taxable_income)}</div>
             </div>
             <div className="meta-item">
               <div className="meta-label">Distribution Ratio</div>
-              <div className="meta-value" style={{ color: 'var(--accent-amber)' }}>{analysis.distribution_vs_income_ratio || 'N/A'}</div>
+              <div className="meta-value">{analysis.distribution_vs_income_ratio || 'N/A'}</div>
             </div>
           </div>
         )}
@@ -405,13 +374,13 @@ const ProcessingMeta = ({ metadata }) => {
   return (
     <div className="card full-width">
       <div className="card-header">
-        <h2>⚙️ Processing Metadata</h2>
+        <h2>Processing Metadata</h2>
       </div>
       <div className="card-body">
         <div className="processing-meta">
           <div className="meta-item">
             <div className="meta-label">Source Document</div>
-            <div className="meta-value">{metadata.source_file || 'sample_k1.pdf'}</div>
+            <div className="meta-value">{metadata.source_file || 'K-1 Schedule'}</div>
           </div>
           <div className="meta-item">
             <div className="meta-label">Pages Processed</div>
@@ -427,9 +396,9 @@ const ProcessingMeta = ({ metadata }) => {
   )
 }
 
-// ============================================================================
-// Batch Mode Components
-// ============================================================================
+/* ================================================================
+   Batch Mode Components
+   ================================================================ */
 
 const BatchOverviewCard = ({ batchData }) => {
   if (!batchData) return null
@@ -440,7 +409,7 @@ const BatchOverviewCard = ({ batchData }) => {
   return (
     <div className="card full-width">
       <div className="card-header">
-        <h2>📋 Batch Processing Overview</h2>
+        <h2>Batch Processing Overview</h2>
         <span className="tag financial">{successful.length}/{profiles.length} Processed</span>
       </div>
       <div className="card-body">
@@ -451,9 +420,9 @@ const BatchOverviewCard = ({ batchData }) => {
               <th>Partnership</th>
               <th>Entity</th>
               <th>Role</th>
-              <th>Net Income</th>
-              <th>Capital End</th>
-              <th>PII</th>
+              <th style={{ textAlign: 'right' }}>Net Income</th>
+              <th style={{ textAlign: 'right' }}>Capital End</th>
+              <th style={{ textAlign: 'center' }}>PII</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -474,7 +443,7 @@ const BatchOverviewCard = ({ batchData }) => {
                   <td className={`batch-amount ${(fa.net_taxable_income || 0) < 0 ? 'amount-negative' : 'amount-positive'}`}>
                     {p.status === 'success' ? formatCurrency(fa.net_taxable_income) : '-'}
                   </td>
-                  <td className="batch-amount amount-positive">
+                  <td className="batch-amount">
                     {p.status === 'success' ? formatCurrency(k1.capital_account_ending) : '-'}
                   </td>
                   <td className="batch-pii">{p.pii_entities_found ?? '-'}</td>
@@ -496,7 +465,7 @@ const BatchOverviewCard = ({ batchData }) => {
 const BatchProfileSelector = ({ profiles, selected, onSelect }) => {
   return (
     <div className="batch-selector">
-      <label className="batch-selector-label">Select Profile:</label>
+      <label className="batch-selector-label">Select Profile</label>
       <div className="batch-selector-grid">
         {profiles.map((p) => (
           <button
@@ -506,7 +475,7 @@ const BatchProfileSelector = ({ profiles, selected, onSelect }) => {
           >
             <span className="batch-profile-num">{String(p.profile_number).padStart(2, '0')}</span>
             <span className="batch-profile-name">{p.partnership_name}</span>
-            <span className={`batch-profile-role ${p.is_general_partner ? 'gp' : 'lp'}`}>
+            <span className="batch-profile-role">
               {p.is_general_partner ? 'GP' : 'LP'} / {p.entity_type || 'Individual'}
             </span>
           </button>
@@ -516,10 +485,6 @@ const BatchProfileSelector = ({ profiles, selected, onSelect }) => {
   )
 }
 
-// ============================================================================
-// View Mode Tabs
-// ============================================================================
-
 const ViewModeTabs = ({ mode, onChangeMode, hasSingle, hasBatch }) => {
   return (
     <div className="view-mode-tabs">
@@ -528,7 +493,7 @@ const ViewModeTabs = ({ mode, onChangeMode, hasSingle, hasBatch }) => {
           className={`view-tab ${mode === 'single' ? 'active' : ''}`}
           onClick={() => onChangeMode('single')}
         >
-          Single K-1 (Deep Analysis)
+          Single K-1 Analysis
         </button>
       )}
       {hasBatch && (
@@ -543,9 +508,9 @@ const ViewModeTabs = ({ mode, onChangeMode, hasSingle, hasBatch }) => {
   )
 }
 
-// ============================================================================
-// App
-// ============================================================================
+/* ================================================================
+   App
+   ================================================================ */
 
 function App() {
   const [singleData, setSingleData] = useState(null)
@@ -563,7 +528,6 @@ function App() {
       const batch = batchResult.status === 'fulfilled' ? batchResult.value : null
       setSingleData(single)
       setBatchData(batch)
-      // Default to whichever is available
       if (batch && !single) setViewMode('batch')
       else if (single) setViewMode('single')
       setLoading(false)
@@ -590,7 +554,7 @@ function App() {
             Run the Dagster pipeline first to generate results. The frontend reads from the pipeline output file.
           </p>
           <code>cd k1_pipeline && uv run dg dev</code>
-          <p style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
+          <p style={{ fontSize: '0.78rem', marginTop: '0.5rem', color: 'var(--text-muted)' }}>
             Then materialize all assets in the Dagster UI at localhost:3000
           </p>
         </div>
@@ -601,7 +565,6 @@ function App() {
   const hasSingle = !!singleData
   const hasBatch = !!batchData
 
-  // Get selected profile data for batch mode
   const batchProfiles = batchData?.profiles || []
   const currentProfile = batchProfiles.find(p => p.profile_number === selectedProfile)
   const profileK1 = currentProfile?.k1_data || {}
@@ -611,9 +574,9 @@ function App() {
     <div className="app">
       <div className="header">
         <div className="header-left">
-          <div className="header-icon">K1</div>
+          <div className="header-icon">K-1</div>
           <div>
-            <h1>K-1 Document Processor</h1>
+            <h1>K-1 Document Intelligence</h1>
             <p>Automated tax document analysis with PII protection</p>
           </div>
         </div>
@@ -629,7 +592,6 @@ function App() {
         <ViewModeTabs mode={viewMode} onChangeMode={setViewMode} hasSingle={hasSingle} hasBatch={hasBatch} />
       )}
 
-      {/* ===== SINGLE MODE ===== */}
       {viewMode === 'single' && singleData && (
         <>
           <StatsGrid data={singleData} />
@@ -643,7 +605,6 @@ function App() {
         </>
       )}
 
-      {/* ===== BATCH MODE ===== */}
       {viewMode === 'batch' && batchData && (
         <>
           <BatchOverviewCard batchData={batchData} />
@@ -659,7 +620,7 @@ function App() {
                 <FinancialDataCard k1={profileK1} />
                 <div className="card">
                   <div className="card-header">
-                    <h2>🏢 Profile Info</h2>
+                    <h2>Profile Details</h2>
                     <span className={`role-badge ${currentProfile.is_general_partner ? 'gp' : 'lp'}`}>
                       {currentProfile.is_general_partner ? 'General Partner' : 'Limited Partner'}
                     </span>
@@ -680,7 +641,7 @@ function App() {
                       </div>
                       <div className="profile-info-row">
                         <span className="profile-info-label">PII Entities</span>
-                        <span className="pii-entity-count">{currentProfile.pii_entities_found} found</span>
+                        <span>{currentProfile.pii_entities_found} detected</span>
                       </div>
                       <div className="profile-info-row">
                         <span className="profile-info-label">OCR Characters</span>
@@ -696,10 +657,10 @@ function App() {
           {currentProfile && currentProfile.status === 'error' && (
             <div className="card full-width" style={{ marginTop: '1rem' }}>
               <div className="card-header">
-                <h2>Error Processing Profile {currentProfile.profile_number}</h2>
+                <h2>Error — Profile {currentProfile.profile_number}</h2>
               </div>
               <div className="card-body">
-                <pre style={{ color: 'var(--accent-red)', fontSize: '0.85rem' }}>{currentProfile.error}</pre>
+                <pre style={{ color: 'var(--negative)', fontSize: '0.82rem' }}>{currentProfile.error}</pre>
               </div>
             </div>
           )}

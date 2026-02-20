@@ -1,19 +1,30 @@
 :root {
-  --bg-primary: #0f172a;
-  --bg-secondary: #1e293b;
-  --bg-card: #1e293b;
-  --bg-card-hover: #334155;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent-blue: #3b82f6;
-  --accent-green: #22c55e;
-  --accent-red: #ef4444;
-  --accent-amber: #f59e0b;
-  --accent-purple: #a855f7;
-  --accent-cyan: #06b6d4;
-  --border: #334155;
-  --border-light: #475569;
+  --bg-primary: #f7f8fa;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f0f2f5;
+  --bg-navy: #0c1e3a;
+  --bg-navy-light: #152d50;
+
+  --text-primary: #0c1e3a;
+  --text-secondary: #4a556b;
+  --text-muted: #8893a7;
+  --text-inverse: #ffffff;
+
+  --navy: #0c1e3a;
+  --navy-600: #152d50;
+  --navy-500: #1e3f6e;
+  --navy-400: #2a5490;
+  --navy-100: #dbe4f0;
+  --navy-50: #eef2f7;
+
+  --positive: #1a6b42;
+  --negative: #a12029;
+  --neutral: #4a556b;
+
+  --border: #dfe3ea;
+  --border-light: #e8ecf1;
+  --border-strong: #c4cbd6;
 }
 
 * {
@@ -28,6 +39,7 @@ body {
   color: var(--text-primary);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
