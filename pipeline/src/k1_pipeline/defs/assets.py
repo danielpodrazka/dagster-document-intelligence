@@ -12,8 +12,6 @@ and reporting on K-1 partnership tax documents. The pipeline demonstrates:
 import base64
 import csv
 import json
-import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -558,15 +556,13 @@ def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
 
 @dg.asset(group_name="compliance", deps=["ocr_extracted_text", "pii_detection_report"])
 def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
-    """Replace detected PII in the OCR text with placeholder tokens.
+    """Replace detected PII in the OCR text with instance-aware placeholder tokens.
 
-    Uses presidio-anonymizer to replace each PII entity with a typed
-    placeholder (e.g., <PERSON>, <US_SSN>, <LOCATION>) so the text can
-    be safely sent to external AI models.
+    Each unique PII value gets a numbered placeholder (e.g., <PERSON_1>, <PERSON_2>)
+    so the AI can distinguish between different entities and a mapping table enables
+    reversibility. The mapping is stored alongside the sanitized text.
     """
-    from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern, RecognizerResult
-    from presidio_anonymizer import AnonymizerEngine
-    from presidio_anonymizer.entities import OperatorConfig
+    from presidio_analyzer import RecognizerResult
 
     staging = _run_staging(config.run_id)
     # Load data
@@ -574,40 +570,49 @@ def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
     pii_report = json.loads((staging / "pii_report.json").read_text())
     full_text = ocr_data["full_text"]
 
-    # Reconstruct RecognizerResult objects from the PII report
-    recognizer_results = []
+    # Reconstruct RecognizerResult objects and extract original text spans
+    entities_with_text: list[tuple[RecognizerResult, str]] = []
     for entity in pii_report["entities"]:
-        recognizer_results.append(
-            RecognizerResult(
-                entity_type=entity["entity_type"],
-                start=entity["start"],
-                end=entity["end"],
-                score=entity["score"],
-            )
+        result = RecognizerResult(
+            entity_type=entity["entity_type"],
+            start=entity["start"],
+            end=entity["end"],
+            score=entity["score"],
         )
+        original_text = full_text[entity["start"]:entity["end"]]
+        entities_with_text.append((result, original_text))
 
-    # Anonymize
-    anonymizer = AnonymizerEngine()
+    # Build instance-aware mapping: same text -> same numbered placeholder
+    # e.g., "John Smith" always maps to <PERSON_1>
+    type_counters: dict[str, int] = {}
+    text_to_placeholder: dict[tuple[str, str], str] = {}  # (entity_type, text) -> placeholder
+    placeholder_to_original: dict[str, str] = {}  # <PERSON_1> -> "John Smith"
 
-    # Use "replace" operator with entity_type as the replacement text
-    operators = {}
-    for entity_type in pii_report["entity_counts"].keys():
-        operators[entity_type] = OperatorConfig(
-            "replace", {"new_value": f"<{entity_type}>"}
-        )
+    # Assign placeholders by first occurrence order for stable numbering
+    for result, original_text in entities_with_text:
+        key = (result.entity_type, original_text)
+        if key not in text_to_placeholder:
+            entity_type = result.entity_type
+            type_counters[entity_type] = type_counters.get(entity_type, 0) + 1
+            placeholder = f"<{entity_type}_{type_counters[entity_type]}>"
+            text_to_placeholder[key] = placeholder
+            placeholder_to_original[placeholder] = original_text
 
-    anonymized_result = anonymizer.anonymize(
-        text=full_text,
-        analyzer_results=recognizer_results,
-        operators=operators,
-    )
+    # Replace entities in reverse position order to preserve offsets
+    sorted_entities = sorted(entities_with_text, key=lambda x: x[0].start, reverse=True)
+    sanitized = full_text
+    for result, original_text in sorted_entities:
+        key = (result.entity_type, original_text)
+        placeholder = text_to_placeholder[key]
+        sanitized = sanitized[:result.start] + placeholder + sanitized[result.end:]
 
-    sanitized = anonymized_result.text
-    replacement_count = len(recognizer_results)
+    replacement_count = len(entities_with_text)
 
     staging_payload = {
         "sanitized_text": sanitized,
+        "placeholder_mapping": placeholder_to_original,
         "replacements_made": replacement_count,
+        "unique_entities": len(text_to_placeholder),
         "original_character_count": len(full_text),
         "sanitized_character_count": len(sanitized),
         "sanitized_at": datetime.now(timezone.utc).isoformat(),
@@ -621,6 +626,7 @@ def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
     return dg.MaterializeResult(
         metadata={
             "replacements_made": dg.MetadataValue.int(replacement_count),
+            "unique_entities": dg.MetadataValue.int(len(text_to_placeholder)),
             "sanitized_text_preview": dg.MetadataValue.md(f"```\n{preview}\n```"),
             "staging_path": dg.MetadataValue.path(str(staging_path)),
         }
@@ -695,7 +701,7 @@ def ai_structured_extraction(config: K1RunConfig) -> dg.MaterializeResult:
 
     system_prompt = """You are an expert tax accountant and financial data extraction specialist.
 You are given OCR-extracted text from an IRS Schedule K-1 (Form 1065 or 1120-S).
-Some personally identifiable information has been replaced with placeholders like <PERSON>, <US_SSN>, etc.
+Some personally identifiable information has been replaced with numbered placeholders like <PERSON_1>, <PERSON_2>, <US_SSN_1>, etc. Each number identifies a unique entity instance.
 
 Your task is to extract all available financial data from the K-1 form and return it as structured data.
 For monetary amounts, use plain numbers (no dollar signs or commas). Use negative numbers for losses.
