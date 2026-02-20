@@ -497,6 +497,7 @@ This project is an educational demo with local file storage and no deployment in
 
 **AI Provider**
 - **Enterprise AI API with US-based inference** — replace DeepSeek with an enterprise-grade provider that guarantees inference within the United States (e.g., Azure OpenAI, AWS Bedrock, or Anthropic API with enterprise terms). For firms handling client PII and financial data, this is a compliance requirement — data must not leave US jurisdiction, and the provider should support a BAA (Business Associate Agreement) or equivalent data processing agreement
+- **On-premise inference (optional)** — for larger operations processing high document volumes (K-1s, 1099s, brokerage statements, trust documents, etc.), on-site inference using open-weight models (Llama, Mistral, Qwen) served via vLLM or TGI can eliminate data jurisdiction concerns entirely, remove per-call API costs, and avoid rate limits during peak tax season. Requires dedicated GPU hardware (e.g., A100/H100) and ML ops capacity
 
 **Validation & Compliance**
 - **Domain-driven validation** — add checks that verify extracted K-1 data against IRS rules (e.g., Box 1 + Box 2 + Box 3 = total income, partner share percentages sum to 100% across all partners, required fields are non-null)
