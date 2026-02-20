@@ -393,10 +393,10 @@ The repo includes 10 realistic K-1 partner profiles for testing, each with disti
 | # | Partnership | Type | Characteristics |
 |---|---|---|---|
 | 1 | Sunbelt Retail Real Estate Fund II | LP | Real estate, loss position |
-| 2 | Sequoia Ridge Venture Partners III | LP | Venture capital |
-| 3 | Blackwater Offshore Macro Fund | LP | Hedge fund |
+| 2 | Granite Peak Venture Partners III | LP | Venture capital |
+| 3 | Stonebridge Offshore Macro Fund | LP | Hedge fund |
 | 4 | Ironclad Industrial Buyout Fund IV | LP | Private equity |
-| 5 | Permian Basin Royalties & Exploration | LP | Energy/oil, profitable |
+| 5 | Red Mesa Royalties & Exploration | LP | Energy/oil, profitable |
 | 6 | Nakamura Family Investment LLC | Trust | Net loss |
 | 7 | Pacific Coast Orthopedic Partners LLP | GP | Medical practice |
 | 8 | Sunbelt CRE Opportunity Fund III | LP | Commercial RE, Section 179 |
@@ -413,7 +413,7 @@ cd pipeline
 # Generate all 10 test profile K-1 PDFs (recommended)
 uv run python scripts/generate_batch_k1s.py
 # → data/input/batch/profile_01_sunbelt_retail_real_estate_fund_ii_lp.pdf
-# → data/input/batch/profile_02_sequoia_ridge_venture_partners_iii_lp.pdf
+# → data/input/batch/profile_02_granite_peak_venture_partners_iii_lp.pdf
 # → ... (10 PDFs + manifest.json)
 
 # Generate a single filled IRS K-1 (one hardcoded profile)

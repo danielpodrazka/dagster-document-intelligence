@@ -184,7 +184,7 @@ PROFILES_6_10 = [
         "partnership_address": "1760 Reston Parkway, Suite 600\nReston, VA 20190",
         "irs_center": "Ogden, UT",
         "ein": "54-8031297",
-        "partner_name": "Dominion Sustainable Capital Corp.",
+        "partner_name": "Commonwealth Sustainable Capital Corp.",
         "partner_address": "700 East Main Street, 12th Floor\nRichmond, VA 23219",
         "ssn": "54-1967834",            # corporate EIN used in SSN field
         "is_general_partner": False,

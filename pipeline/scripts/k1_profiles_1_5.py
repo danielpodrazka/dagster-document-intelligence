@@ -3,10 +3,10 @@ Realistic Schedule K-1 (Form 1065) partner profiles for testing.
 
 Five distinct real-world scenarios:
   1. Sunbelt Retail Real Estate Fund, LP  -- Limited partner, heavy rental losses, passive activity
-  2. Sequoia Ridge Venture Partners III, LP -- General partner (fund manager), large carried interest
-  3. Blackwater Offshore Macro Fund, LP -- LP in hedge fund, short-term losses, foreign taxes
+  2. Granite Peak Venture Partners III, LP -- General partner (fund manager), large carried interest
+  3. Stonebridge Offshore Macro Fund, LP -- LP in hedge fund, short-term losses, foreign taxes
   4. Ironclad Industrial Buyout Fund IV, LP -- LP in private equity, massive LT capital gain year
-  5. Permian Basin Royalties & Exploration, LP -- GP in oil & gas, depletion, AMT adjustments
+  5. Red Mesa Royalties & Exploration, LP -- GP in oil & gas, depletion, AMT adjustments
 
 All EINs, SSNs, addresses, and financial figures are entirely fictitious.
 Dollar amounts follow IRS K-1 convention: negatives as "(amount)", positives plain.
@@ -66,7 +66,7 @@ PROFILES_1_5 = [
     },
 
     # =========================================================================
-    # PROFILE 2 -- Sequoia Ridge Venture Partners III, LP
+    # PROFILE 2 -- Granite Peak Venture Partners III, LP
     # Early-stage VC fund. This partner is the GENERAL PARTNER (fund manager
     # entity). Receives a substantial management fee (guaranteed payments) plus
     # carried interest (LT cap gains). Ordinary income from portfolio company
@@ -74,8 +74,8 @@ PROFILES_1_5 = [
     # No rental real estate. No foreign taxes on this K-1.
     # =========================================================================
     {
-        "partnership_name": "Sequoia Ridge Venture Partners III, LP",
-        "partnership_address": "2882 Sand Hill Road, Suite 240\nMenlo Park, CA 94025",
+        "partnership_name": "Granite Peak Venture Partners III, LP",
+        "partnership_address": "4100 Bohannon Drive, Suite 240\nMenlo Park, CA 94025",
         "irs_center": "Ogden, UT",
         "ein": "81-2047563",
         "partner_name": "Priya R. Nambiar",
@@ -118,7 +118,7 @@ PROFILES_1_5 = [
     },
 
     # =========================================================================
-    # PROFILE 3 -- Blackwater Offshore Macro Fund, LP
+    # PROFILE 3 -- Stonebridge Offshore Macro Fund, LP
     # Global macro hedge fund structured as a domestic LP with offshore exposure.
     # This is a small LP interest (<1%). Short-term trading losses dominate;
     # interest income from T-bills is meaningful. Foreign taxes paid on
@@ -126,7 +126,7 @@ PROFILES_1_5 = [
     # no Section 179. Capital account is modest -- recent investor.
     # =========================================================================
     {
-        "partnership_name": "Blackwater Offshore Macro Fund, LP",
+        "partnership_name": "Stonebridge Offshore Macro Fund, LP",
         "partnership_address": "601 Brickell Key Drive, Suite 700\nMiami, FL 33131",
         "irs_center": "Kansas City, MO",
         "ein": "27-6534891",
@@ -179,7 +179,7 @@ PROFILES_1_5 = [
     # =========================================================================
     {
         "partnership_name": "Ironclad Industrial Buyout Fund IV, LP",
-        "partnership_address": "200 West Street, 21st Floor\nNew York, NY 10282",
+        "partnership_address": "750 Seventh Avenue, 21st Floor\nNew York, NY 10019",
         "irs_center": "Ogden, UT",
         "ein": "83-1726450",
         "partner_name": "Robert F. Callahan",
@@ -222,7 +222,7 @@ PROFILES_1_5 = [
     },
 
     # =========================================================================
-    # PROFILE 5 -- Permian Basin Royalties & Exploration Partners, LP
+    # PROFILE 5 -- Red Mesa Royalties & Exploration Partners, LP
     # Oil & gas working interest partnership. This partner is the GENERAL
     # PARTNER and operator. Receives guaranteed payments for operating services.
     # Substantial depletion, intangible drilling costs (other deductions),
@@ -231,7 +231,7 @@ PROFILES_1_5 = [
     # from sale of surface acreage. Recourse liabilities from credit facility.
     # =========================================================================
     {
-        "partnership_name": "Permian Basin Royalties & Exploration Partners, LP",
+        "partnership_name": "Red Mesa Royalties & Exploration Partners, LP",
         "partnership_address": "500 W. Texas Avenue, Suite 1200\nMidland, TX 79701",
         "irs_center": "Ogden, UT",
         "ein": "75-2893041",
