@@ -74,6 +74,10 @@ def _base_css() -> str:
             color: {TEXT_MUTED};
         }}
     }}
+    @page landscape {{
+        size: letter landscape;
+        margin: 0.5in 0.6in;
+    }}
 
     body {{
         font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -372,119 +376,122 @@ def render_single_report_html(
 
 
 # ---------------------------------------------------------------------------
-# Batch report
+# Processing overview report
 # ---------------------------------------------------------------------------
 
-def render_batch_report_html(batch_data: dict) -> str:
-    """Render a batch K-1 report (cover page + per-profile pages)."""
+def render_overview_html(reports: list[dict], generated_at: str) -> str:
+    """Render an overview PDF summarizing all processed K-1 reports."""
 
-    results = batch_data.get("results", [])
-    total = batch_data.get("total_profiles", len(results))
-    successful = batch_data.get("successful", 0)
-    failed = batch_data.get("failed", 0)
-    generated = batch_data.get("processed_at", "")
+    total = len(reports)
 
-    # -- Cover page --
-    cover_rows = []
-    for r in results:
-        num = r.get("profile_number", "")
-        name = r.get("partnership_name", "")
-        etype = r.get("entity_type", "")
-        status = r.get("status", "")
-        badge_cls = "badge-success" if status == "success" else "badge-error"
-        fa = r.get("financial_analysis", {})
-        net = fa.get("net_taxable_income")
-        is_gp = r.get("is_general_partner", False)
-        role_cls = "badge-gp" if is_gp else "badge-lp"
-        role_label = "GP" if is_gp else "LP"
+    # -- Summary table rows --
+    table_rows = []
+    total_income_sum = 0.0
+    total_net_sum = 0.0
 
-        cover_rows.append(f"""<tr>
-            <td>{num:02d}</td>
-            <td>{name}</td>
-            <td>{etype}</td>
-            <td><span class="badge {role_cls}">{role_label}</span></td>
-            <td><span class="badge {badge_cls}">{status}</span></td>
-            <td class="amount">{_fmt_currency(net)}</td>
-        </tr>""")
-
-    # -- Per-profile pages --
-    profile_pages = []
-    for r in results:
-        if r.get("status") != "success":
-            continue
+    for i, r in enumerate(reports, 1):
         k1 = r.get("k1_data", {})
         fa = r.get("financial_analysis", {})
-        name = r.get("partnership_name", "")
-        partner = r.get("partner_name", "")
-        is_gp = r.get("is_general_partner", False)
-        role_cls = "badge-gp" if is_gp else "badge-lp"
-        role_label = "GP" if is_gp else "LP"
-        pii_count = r.get("pii_entities_found", 0)
+        name = k1.get("partnership_name", "—")
+        tax_year = k1.get("tax_year", "—")
+        partner_type_raw = k1.get("partner_type", "—") or "—"
+        pt = partner_type_raw.lower()
+        if "general" in pt and "limited" in pt:
+            partner_type = "GP/LP"
+        elif "general" in pt:
+            partner_type = "GP"
+        elif "limited" in pt:
+            partner_type = "LP"
+        else:
+            partner_type = partner_type_raw
+        income = fa.get("total_income")
+        net = fa.get("net_taxable_income")
+        distributions = k1.get("distributions")
+        processed_raw = r.get("processed_at", "—")
+        # Shorten ISO timestamp to "YYYY-MM-DD HH:MM"
+        if processed_raw and processed_raw != "—":
+            processed = processed_raw[:16].replace("T", " ")
+        else:
+            processed = "—"
 
-        profile_pages.append(f"""
-        <div class="page-break"></div>
-        <div class="section">
-            <div class="section-title">
-                Profile {r['profile_number']:02d} — {name}
-                <span class="badge {role_cls}" style="margin-left:8px">{role_label}</span>
-            </div>
-            <p style="color:{TEXT_SECONDARY}; margin-bottom:10px">Partner: {partner} | PII entities detected: {pii_count}</p>
-            <table>
-                <tr><th>Field</th><th class="amount">Value</th></tr>
-                {_k1_table_html(k1)}
-            </table>
-        </div>
-        <div class="section">
-            <div class="section-title">Financial Analysis</div>
-            {_analysis_section_html(fa)}
-        </div>
-        """)
+        if income is not None:
+            total_income_sum += float(income)
+        if net is not None:
+            total_net_sum += float(net)
+
+        table_rows.append(f"""<tr>
+            <td>{i}</td>
+            <td class="wrap">{name}</td>
+            <td>{tax_year}</td>
+            <td>{partner_type}</td>
+            <td class="amount">{_fmt_currency(income)}</td>
+            <td class="amount">{_fmt_currency(net)}</td>
+            <td class="amount">{_fmt_currency(distributions)}</td>
+            <td>{processed}</td>
+        </tr>""")
 
     return f"""<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><style>{_base_css()}</style></head>
+<head><meta charset="utf-8"><style>
+{_base_css()}
+body {{ page: overview; }}
+@page overview {{
+    size: letter landscape;
+    margin: 0.5in 0.6in;
+}}
+.overview-table {{
+    font-size: 8.5pt;
+}}
+.overview-table th, .overview-table td {{
+    padding: 5px 8px;
+    white-space: nowrap;
+}}
+.overview-table td.wrap {{
+    white-space: normal;
+}}
+</style></head>
 <body>
 
 <div class="report-header">
-    <h1>Batch K-1 Processing Report</h1>
-    <div class="subtitle">{total} Profiles Analyzed</div>
+    <h1>K-1 Processing Overview</h1>
+    <div class="subtitle">{total} Document{"s" if total != 1 else ""} Processed</div>
 </div>
 
 <div class="summary-row">
     <div class="summary-box">
-        <div class="label">Total Profiles</div>
+        <div class="label">Documents Processed</div>
         <div class="value">{total}</div>
     </div>
     <div class="summary-box">
-        <div class="label">Successful</div>
-        <div class="value">{successful}</div>
+        <div class="label">Aggregate Income</div>
+        <div class="value">{_fmt_currency(total_income_sum)}</div>
     </div>
     <div class="summary-box">
-        <div class="label">Failed</div>
-        <div class="value">{failed}</div>
+        <div class="label">Aggregate Net Taxable</div>
+        <div class="value">{_fmt_currency(total_net_sum)}</div>
     </div>
 </div>
 
 <div class="section">
-    <div class="section-title">Portfolio Overview</div>
-    <table>
+    <div class="section-title">Processed Documents</div>
+    <table class="overview-table">
         <tr>
             <th>#</th>
             <th>Partnership</th>
-            <th>Entity Type</th>
-            <th>Role</th>
-            <th>Status</th>
-            <th class="amount">Net Taxable Income</th>
+            <th>Year</th>
+            <th>Type</th>
+            <th class="amount">Total Income</th>
+            <th class="amount">Net Taxable</th>
+            <th class="amount">Distributions</th>
+            <th>Processed</th>
         </tr>
-        {"".join(cover_rows)}
+        {"".join(table_rows)}
     </table>
 </div>
 
 <div class="footer-note">
-    Generated {generated} | K-1 Document Intelligence Pipeline v1.0
+    Generated {generated_at[:16].replace("T", " ") if generated_at else ""} | K-1 Document Intelligence Pipeline v1.0
 </div>
-
-{"".join(profile_pages)}
 
 </body>
 </html>"""

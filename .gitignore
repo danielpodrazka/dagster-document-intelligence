@@ -14,12 +14,12 @@ storage/
 logs/
 
 # Pipeline data (generated at runtime)
-k1_pipeline/data/input/*.pdf
-k1_pipeline/data/input/batch/
-k1_pipeline/data/input/archive/irs_k1_2024.pdf
-k1_pipeline/data/dropoff/
-k1_pipeline/data/staging/
-k1_pipeline/data/output/
+pipeline/data/input/*.pdf
+pipeline/data/input/batch/
+pipeline/data/input/archive/irs_k1_2024.pdf
+pipeline/data/dropoff/
+pipeline/data/staging/
+pipeline/data/output/
 
 # Node / React
 node_modules/

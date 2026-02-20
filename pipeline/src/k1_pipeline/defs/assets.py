@@ -9,8 +9,6 @@ and reporting on K-1 partnership tax documents. The pipeline demonstrates:
   - Financial analysis and reporting
 """
 
-from __future__ import annotations
-
 import base64
 import csv
 import json
@@ -134,12 +132,26 @@ class FinancialAnalysis(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helper: find the first PDF in data/input/
+# Run config: allows per-run isolation for parallel processing
 # ---------------------------------------------------------------------------
 
 
-def _find_input_pdf() -> Path:
-    """Return the path to the first PDF file found in data/input/."""
+class K1RunConfig(dg.Config):
+    """Config passed to each asset to isolate staging paths per run."""
+    run_id: str = ""
+
+
+def _run_staging(run_id: str) -> Path:
+    """Return the staging directory for this run (namespaced if run_id is set)."""
+    d = DATA_STAGING / run_id if run_id else DATA_STAGING
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run_pdf_path(run_id: str) -> Path:
+    """Return the PDF path for this run, or fall back to first PDF in input/."""
+    if run_id:
+        return DATA_INPUT / f"{run_id}.pdf"
     pdfs = sorted(DATA_INPUT.glob("*.pdf"))
     if not pdfs:
         raise FileNotFoundError(
@@ -247,14 +259,15 @@ def irs_k1_form_fill() -> dg.MaterializeResult:
 
 
 @dg.asset(group_name="ingestion", deps=["irs_k1_form_fill"])
-def raw_k1_pdf() -> dg.MaterializeResult:
+def raw_k1_pdf(config: K1RunConfig) -> dg.MaterializeResult:
     """Ingest a K-1 PDF from data/input/ and store its raw bytes (base64) in staging.
 
     This is the entry point of the pipeline. It reads the first PDF found in
     the input directory, encodes it as base64, and persists it to a JSON file
     in data/staging/ so downstream assets have a reproducible snapshot.
     """
-    pdf_path = _find_input_pdf()
+    staging = _run_staging(config.run_id)
+    pdf_path = _run_pdf_path(config.run_id)
     pdf_bytes = pdf_path.read_bytes()
     encoded = base64.b64encode(pdf_bytes).decode("utf-8")
 
@@ -283,7 +296,7 @@ def raw_k1_pdf() -> dg.MaterializeResult:
         "ingested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    staging_path = DATA_STAGING / "raw_pdf_bytes.json"
+    staging_path = staging / "raw_pdf_bytes.json"
     staging_path.write_text(json.dumps(staging_payload, indent=2))
 
     return dg.MaterializeResult(
@@ -302,7 +315,7 @@ def raw_k1_pdf() -> dg.MaterializeResult:
 
 
 @dg.asset(group_name="processing", deps=["raw_k1_pdf"])
-def ocr_extracted_text() -> dg.MaterializeResult:
+def ocr_extracted_text(config: K1RunConfig) -> dg.MaterializeResult:
     """Convert K-1 PDF pages to images and extract text via OCR (Tesseract).
 
     Uses pdf2image to rasterize each page and pytesseract to perform OCR.
@@ -311,7 +324,8 @@ def ocr_extracted_text() -> dg.MaterializeResult:
     import pytesseract
     from pdf2image import convert_from_path
 
-    pdf_path = _find_input_pdf()
+    staging = _run_staging(config.run_id)
+    pdf_path = _run_pdf_path(config.run_id)
 
     # Convert PDF pages to PIL images
     images = convert_from_path(str(pdf_path), dpi=300)
@@ -336,7 +350,7 @@ def ocr_extracted_text() -> dg.MaterializeResult:
         "extracted_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    staging_path = DATA_STAGING / "ocr_text.json"
+    staging_path = staging / "ocr_text.json"
     staging_path.write_text(json.dumps(staging_payload, indent=2))
 
     preview = full_text[:500] + ("..." if len(full_text) > 500 else "")
@@ -459,7 +473,7 @@ def _results_to_report(results, full_text: str) -> dict:
 
 
 @dg.asset(group_name="compliance", deps=["ocr_extracted_text"])
-def pii_detection_report() -> dg.MaterializeResult:
+def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
     """Detect PII entities using three approaches: Presidio, GLiNER, and combined.
 
     Runs Presidio (spaCy NER + regex), GLiNER (zero-shot NER), and a hybrid of
@@ -467,8 +481,9 @@ def pii_detection_report() -> dg.MaterializeResult:
     The combined (Presidio+GLiNER) result is used as the primary PII report for
     downstream assets.
     """
+    staging = _run_staging(config.run_id)
     # Load OCR text
-    ocr_path = DATA_STAGING / "ocr_text.json"
+    ocr_path = staging / "ocr_text.json"
     ocr_data = json.loads(ocr_path.read_text())
     full_text = ocr_data["full_text"]
 
@@ -494,7 +509,7 @@ def pii_detection_report() -> dg.MaterializeResult:
 
     # Save the combined report as the primary PII report (used by downstream assets)
     primary_report = {**combined_report, "analyzed_at": now}
-    staging_path = DATA_STAGING / "pii_report.json"
+    staging_path = staging / "pii_report.json"
     staging_path.write_text(json.dumps(primary_report, indent=2))
 
     # Save the full comparison
@@ -505,7 +520,7 @@ def pii_detection_report() -> dg.MaterializeResult:
         "analyzed_at": now,
     }
 
-    comparison_path = DATA_STAGING / "pii_comparison.json"
+    comparison_path = staging / "pii_comparison.json"
     comparison_path.write_text(json.dumps(comparison, indent=2))
 
     # Build comparison table for metadata
@@ -542,7 +557,7 @@ def pii_detection_report() -> dg.MaterializeResult:
 
 
 @dg.asset(group_name="compliance", deps=["ocr_extracted_text", "pii_detection_report"])
-def sanitized_text() -> dg.MaterializeResult:
+def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
     """Replace detected PII in the OCR text with placeholder tokens.
 
     Uses presidio-anonymizer to replace each PII entity with a typed
@@ -553,9 +568,10 @@ def sanitized_text() -> dg.MaterializeResult:
     from presidio_anonymizer import AnonymizerEngine
     from presidio_anonymizer.entities import OperatorConfig
 
+    staging = _run_staging(config.run_id)
     # Load data
-    ocr_data = json.loads((DATA_STAGING / "ocr_text.json").read_text())
-    pii_report = json.loads((DATA_STAGING / "pii_report.json").read_text())
+    ocr_data = json.loads((staging / "ocr_text.json").read_text())
+    pii_report = json.loads((staging / "pii_report.json").read_text())
     full_text = ocr_data["full_text"]
 
     # Reconstruct RecognizerResult objects from the PII report
@@ -597,7 +613,7 @@ def sanitized_text() -> dg.MaterializeResult:
         "sanitized_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    staging_path = DATA_STAGING / "sanitized_text.json"
+    staging_path = staging / "sanitized_text.json"
     staging_path.write_text(json.dumps(staging_payload, indent=2))
 
     preview = sanitized[:500] + ("..." if len(sanitized) > 500 else "")
@@ -663,7 +679,7 @@ def _serialize_messages(messages) -> list[dict]:
 
 
 @dg.asset(group_name="ai_analysis", deps=["sanitized_text"])
-def ai_structured_extraction() -> dg.MaterializeResult:
+def ai_structured_extraction(config: K1RunConfig) -> dg.MaterializeResult:
     """Use PydanticAI with DeepSeek to extract structured K-1 data from sanitized text.
 
     Sends the PII-sanitized OCR text to DeepSeek (via PydanticAI) with a
@@ -672,8 +688,9 @@ def ai_structured_extraction() -> dg.MaterializeResult:
     """
     from pydantic_ai import Agent
 
+    staging = _run_staging(config.run_id)
     # Load sanitized text
-    sanitized_data = json.loads((DATA_STAGING / "sanitized_text.json").read_text())
+    sanitized_data = json.loads((staging / "sanitized_text.json").read_text())
     text = sanitized_data["sanitized_text"]
 
     system_prompt = """You are an expert tax accountant and financial data extraction specialist.
@@ -714,7 +731,7 @@ Be thorough and accurate. Look for all box numbers and their corresponding value
         },
     }
 
-    staging_path = DATA_STAGING / "structured_k1.json"
+    staging_path = staging / "structured_k1.json"
     staging_path.write_text(json.dumps(staging_payload, indent=2))
 
     # Build summary for metadata
@@ -737,7 +754,7 @@ Be thorough and accurate. Look for all box numbers and their corresponding value
 
 
 @dg.asset(group_name="ai_analysis", deps=["ai_structured_extraction", "sanitized_text"])
-def ai_financial_analysis() -> dg.MaterializeResult:
+def ai_financial_analysis(config: K1RunConfig) -> dg.MaterializeResult:
     """Use PydanticAI with DeepSeek to perform financial analysis on the extracted K-1 data.
 
     Combines the structured extraction with the sanitized text to generate
@@ -746,9 +763,10 @@ def ai_financial_analysis() -> dg.MaterializeResult:
     """
     from pydantic_ai import Agent
 
+    staging = _run_staging(config.run_id)
     # Load inputs
-    structured_data = json.loads((DATA_STAGING / "structured_k1.json").read_text())
-    sanitized_data = json.loads((DATA_STAGING / "sanitized_text.json").read_text())
+    structured_data = json.loads((staging / "structured_k1.json").read_text())
+    sanitized_data = json.loads((staging / "sanitized_text.json").read_text())
 
     k1_json = json.dumps(structured_data["extracted_data"], indent=2)
     sanitized_text_content = sanitized_data["sanitized_text"]
@@ -799,7 +817,7 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
         },
     }
 
-    staging_path = DATA_STAGING / "financial_analysis.json"
+    staging_path = staging / "financial_analysis.json"
     staging_path.write_text(json.dumps(staging_payload, indent=2))
 
     # Key findings for metadata
@@ -828,7 +846,7 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
 
 
 @dg.asset(group_name="output", deps=["ai_structured_extraction", "ai_financial_analysis", "pii_detection_report"])
-def final_report() -> dg.MaterializeResult:
+def final_report(config: K1RunConfig) -> dg.MaterializeResult:
     """Combine all pipeline outputs into final deliverable reports.
 
     Produces three output files:
@@ -836,18 +854,19 @@ def final_report() -> dg.MaterializeResult:
       - k1_summary.csv: Flat CSV summary of key financial fields
       - pipeline_results.json: Everything the React frontend needs
     """
+    staging = _run_staging(config.run_id)
     # Load all staging data
-    structured_data = json.loads((DATA_STAGING / "structured_k1.json").read_text())
-    analysis_data = json.loads((DATA_STAGING / "financial_analysis.json").read_text())
-    pii_report = json.loads((DATA_STAGING / "pii_report.json").read_text())
-    pii_comparison = json.loads((DATA_STAGING / "pii_comparison.json").read_text())
+    structured_data = json.loads((staging / "structured_k1.json").read_text())
+    analysis_data = json.loads((staging / "financial_analysis.json").read_text())
+    pii_report = json.loads((staging / "pii_report.json").read_text())
+    pii_comparison = json.loads((staging / "pii_comparison.json").read_text())
 
     k1_data = structured_data["extracted_data"]
     analysis = analysis_data["analysis"]
     now = datetime.now(timezone.utc)
 
     # Create a unique output directory per run based on source PDF and timestamp
-    raw_data = json.loads((DATA_STAGING / "raw_pdf_bytes.json").read_text())
+    raw_data = json.loads((staging / "raw_pdf_bytes.json").read_text())
     pdf_stem = Path(raw_data["file_name"]).stem
     run_output = DATA_OUTPUT / f"{pdf_stem}_{now.strftime('%Y%m%d_%H%M%S')}"
     run_output.mkdir(parents=True, exist_ok=True)

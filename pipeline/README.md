@@ -1,4 +1,4 @@
-# k1_pipeline
+# pipeline
 
 ## Getting started
 

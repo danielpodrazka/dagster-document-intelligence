@@ -553,7 +553,7 @@ function App() {
           <p>
             Run the Dagster pipeline first to generate results. The frontend reads from the pipeline output file.
           </p>
-          <code>cd k1_pipeline && uv run dg dev</code>
+          <code>cd pipeline && uv run dg dev</code>
           <p style={{ fontSize: '0.78rem', marginTop: '0.5rem', color: 'var(--text-muted)' }}>
             Then materialize all assets in the Dagster UI at localhost:3000
           </p>

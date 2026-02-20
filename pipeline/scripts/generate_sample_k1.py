@@ -6,7 +6,7 @@ This script creates a sample K-1 document for demo/testing purposes.
 All data is fictitious. Uses reportlab for PDF generation.
 
 Usage:
-    cd /home/daniel/pp/tyler_demo/k1_pipeline && uv run python scripts/generate_sample_k1.py
+    cd pipeline && uv run python scripts/generate_sample_k1.py
 
 The output PDF is written to data/input/sample_k1.pdf by default.
 """
