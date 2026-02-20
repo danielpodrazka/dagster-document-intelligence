@@ -1,5 +1,7 @@
 # K-1 Document Intelligence Pipeline
 
+**GitHub:** [github.com/danielpodrazka/dagster-document-intelligence](https://github.com/danielpodrazka/dagster-document-intelligence)
+
 A production-grade data pipeline built with **Dagster** that automatically ingests IRS Schedule K-1 tax documents, detects and redacts PII, extracts structured financial data using AI, and generates professional PDF reports — with a React dashboard for visualization.
 
 Built as an educational reference for combining document processing, compliance automation, and AI-powered analysis in a modern data orchestration framework.
@@ -346,7 +348,7 @@ graph LR
 
 ```bash
 # Clone the repo
-git clone <repo-url> && cd dagster-document-intelligence
+git clone https://github.com/danielpodrazka/dagster-document-intelligence.git && cd dagster-document-intelligence
 
 # Create .env with your DeepSeek API key
 echo "DEEPSEEK_API_KEY=your-key-here" > .env
@@ -486,4 +488,4 @@ Or copy the `.claude/skills/` directory into your own project.
 
 ## License
 
-Educational use. Not intended for production tax processing.
+MIT License. See [LICENSE](LICENSE) for details. Not intended for production tax processing.
