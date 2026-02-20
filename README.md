@@ -114,8 +114,8 @@ graph TD
     Primary --> Anon["Anonymizer<br/>Replace entities with<br/>typed placeholders"]
     Anon --> Safe["Sanitized Text<br/>Safe for external AI"]
 
-    style Primary fill:#e6f4ed,stroke:#1a6b42
-    style Safe fill:#e6f4ed,stroke:#1a6b42
+    style Primary fill:#e6f4ed,stroke:#1a6b42,color:#000
+    style Safe fill:#e6f4ed,stroke:#1a6b42,color:#000
 ```
 
 | Entity Type | Presidio | GLiNER | Combined |
