@@ -245,79 +245,115 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
 # ===========================================================================
 
 
+def _process_single_profile(file_info: dict) -> dict:
+    """Process a single K-1 PDF through the full pipeline (OCR -> PII -> sanitize -> AI).
+
+    This function is designed to be called from a ThreadPoolExecutor.
+    """
+    profile_num = file_info["profile_number"]
+    filename = file_info["filename"]
+    pdf_path = BATCH_INPUT / filename
+    slug = filename.replace(".pdf", "")
+    profile_dir = BATCH_STAGING / slug
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Step 1: OCR
+        ocr_text = _ocr_pdf(pdf_path)
+        (profile_dir / "ocr_text.txt").write_text(ocr_text)
+
+        # Step 2: PII Detection (Presidio only for speed)
+        pii_entities = _detect_pii_presidio(ocr_text)
+        (profile_dir / "pii_report.json").write_text(
+            json.dumps({"total_entities": len(pii_entities), "entities": pii_entities}, indent=2)
+        )
+
+        # Step 3: Sanitize
+        sanitized = _sanitize_text(ocr_text, pii_entities)
+        (profile_dir / "sanitized_text.txt").write_text(sanitized)
+
+        # Step 4: AI Extraction
+        extracted = _ai_extract_k1(sanitized)
+        (profile_dir / "structured_k1.json").write_text(json.dumps(extracted, indent=2))
+
+        # Step 5: AI Analysis
+        analysis = _ai_analyze_k1(extracted, sanitized)
+        (profile_dir / "financial_analysis.json").write_text(json.dumps(analysis, indent=2))
+
+        return {
+            "profile_number": profile_num,
+            "filename": filename,
+            "partnership_name": file_info["partnership_name"],
+            "partner_name": file_info["partner_name"],
+            "entity_type": file_info["entity_type"],
+            "is_general_partner": file_info["is_general_partner"],
+            "status": "success",
+            "ocr_chars": len(ocr_text),
+            "pii_entities_found": len(pii_entities),
+            "k1_data": extracted,
+            "financial_analysis": analysis,
+        }
+
+    except Exception as e:
+        return {
+            "profile_number": profile_num,
+            "filename": filename,
+            "partnership_name": file_info["partnership_name"],
+            "status": "error",
+            "error": str(e),
+        }
+
+
 @dg.asset(group_name="batch", deps=["sample_k1_batch"])
-def batch_process_all() -> dg.MaterializeResult:
-    """Process all 10 K-1 PDFs through the full pipeline.
+def batch_process_all(context) -> dg.MaterializeResult:
+    """Process all 10 K-1 PDFs through the full pipeline in parallel.
 
     For each PDF: OCR -> PII Detection (Presidio) -> Sanitization ->
     AI Structured Extraction -> AI Financial Analysis.
 
+    Uses ThreadPoolExecutor with 5 workers so multiple profiles are
+    processed concurrently (AI API calls are I/O-bound).
+
     Results are stored per-profile in data/staging/batch/{profile_slug}/
     and a combined batch_results.json is written to data/staging/.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     BATCH_STAGING.mkdir(parents=True, exist_ok=True)
 
     manifest_path = BATCH_INPUT / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
 
-    all_results = []
-    errors = []
+    all_results: list[dict] = []
+    errors: list[dict] = []
 
-    for file_info in manifest["files"]:
-        profile_num = file_info["profile_number"]
-        filename = file_info["filename"]
-        pdf_path = BATCH_INPUT / filename
-        slug = filename.replace(".pdf", "")
-        profile_dir = BATCH_STAGING / slug
+    context.log.info(f"Processing {len(manifest['files'])} profiles in parallel (5 workers)")
 
-        profile_dir.mkdir(parents=True, exist_ok=True)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_info = {
+            executor.submit(_process_single_profile, fi): fi
+            for fi in manifest["files"]
+        }
 
-        try:
-            # Step 1: OCR
-            ocr_text = _ocr_pdf(pdf_path)
-            (profile_dir / "ocr_text.txt").write_text(ocr_text)
+        for future in as_completed(future_to_info):
+            file_info = future_to_info[future]
+            result = future.result()
+            all_results.append(result)
 
-            # Step 2: PII Detection (Presidio only for speed)
-            pii_entities = _detect_pii_presidio(ocr_text)
-            (profile_dir / "pii_report.json").write_text(
-                json.dumps({"total_entities": len(pii_entities), "entities": pii_entities}, indent=2)
-            )
+            if result["status"] == "success":
+                context.log.info(
+                    f"  Profile {result['profile_number']:02d} OK — "
+                    f"{result['partnership_name']}"
+                )
+            else:
+                errors.append(result)
+                context.log.warning(
+                    f"  Profile {result['profile_number']:02d} FAILED — "
+                    f"{result.get('error', 'unknown')}"
+                )
 
-            # Step 3: Sanitize
-            sanitized = _sanitize_text(ocr_text, pii_entities)
-            (profile_dir / "sanitized_text.txt").write_text(sanitized)
-
-            # Step 4: AI Extraction
-            extracted = _ai_extract_k1(sanitized)
-            (profile_dir / "structured_k1.json").write_text(json.dumps(extracted, indent=2))
-
-            # Step 5: AI Analysis
-            analysis = _ai_analyze_k1(extracted, sanitized)
-            (profile_dir / "financial_analysis.json").write_text(json.dumps(analysis, indent=2))
-
-            all_results.append({
-                "profile_number": profile_num,
-                "filename": filename,
-                "partnership_name": file_info["partnership_name"],
-                "partner_name": file_info["partner_name"],
-                "entity_type": file_info["entity_type"],
-                "is_general_partner": file_info["is_general_partner"],
-                "status": "success",
-                "ocr_chars": len(ocr_text),
-                "pii_entities_found": len(pii_entities),
-                "k1_data": extracted,
-                "financial_analysis": analysis,
-            })
-
-        except Exception as e:
-            errors.append({"profile_number": profile_num, "filename": filename, "error": str(e)})
-            all_results.append({
-                "profile_number": profile_num,
-                "filename": filename,
-                "partnership_name": file_info["partnership_name"],
-                "status": "error",
-                "error": str(e),
-            })
+    # Sort results by profile number for consistent output
+    all_results.sort(key=lambda r: r["profile_number"])
 
     # Save combined results
     batch_results = {
