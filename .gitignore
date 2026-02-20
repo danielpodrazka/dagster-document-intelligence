@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+*.egg
+
+# Environment
+.env
+
+# Dagster
+.dagster_home/
+storage/
+logs/
+
+# Pipeline data (generated at runtime)
+k1_pipeline/data/input/*.pdf
+k1_pipeline/data/input/batch/
+k1_pipeline/data/input/archive/irs_k1_2024.pdf
+k1_pipeline/data/staging/
+k1_pipeline/data/output/
+
+# Node / React
+node_modules/
+frontend/dist/
+frontend/public/pipeline_results.json
+frontend/public/batch/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
