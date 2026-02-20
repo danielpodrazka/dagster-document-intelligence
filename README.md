@@ -495,6 +495,9 @@ This project is an educational demo with local file storage and no deployment in
 - **Containerization** — add `Dockerfile` and `docker-compose.yml` to bundle Tesseract, Poppler, WeasyPrint, and the Python environment into a reproducible image
 - **Deploy to Dagster+** — use [Dagster+](https://dagster.io/plus) for managed orchestration, or self-host with the Dagster Helm chart on Kubernetes
 
+**AI Provider**
+- **Enterprise AI API with US-based inference** — replace DeepSeek with an enterprise-grade provider that guarantees inference within the United States (e.g., Azure OpenAI, AWS Bedrock, or Anthropic API with enterprise terms). For firms handling client PII and financial data, this is a compliance requirement — data must not leave US jurisdiction, and the provider should support a BAA (Business Associate Agreement) or equivalent data processing agreement
+
 **Validation & Compliance**
 - **Domain-driven validation** — add checks that verify extracted K-1 data against IRS rules (e.g., Box 1 + Box 2 + Box 3 = total income, partner share percentages sum to 100% across all partners, required fields are non-null)
 - **Dagster asset checks** — use [`@asset_check`](https://docs.dagster.io/concepts/assets/asset-checks) to enforce data quality gates between pipeline stages (e.g., OCR confidence thresholds, PII detection completeness, extraction field coverage)
