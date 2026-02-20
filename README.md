@@ -2,9 +2,9 @@
 
 **GitHub:** [github.com/danielpodrazka/dagster-document-intelligence](https://github.com/danielpodrazka/dagster-document-intelligence)
 
-A production-grade data pipeline built with **Dagster** that automatically ingests IRS Schedule K-1 tax documents, detects and redacts PII, extracts structured financial data using AI, and generates professional PDF reports — with a React dashboard for visualization.
+A data pipeline built with **Dagster** that automatically ingests IRS Schedule K-1 tax documents, detects and redacts PII, extracts structured financial data using AI, and generates professional PDF reports — with a React dashboard for visualization.
 
-Built as an educational reference for combining document processing, compliance automation, and AI-powered analysis in a modern data orchestration framework.
+Built as an educational project demonstrating how to combine document processing, compliance automation, and AI-powered analysis in a modern data orchestration framework.
 
 ## Architecture Overview
 
