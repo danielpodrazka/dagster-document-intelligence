@@ -49,78 +49,140 @@
   margin-top: 0.1rem;
 }
 
-.pipeline-badge {
+/* ================================================================
+   Back Button & Report Detail Header
+   ================================================================ */
+.back-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   padding: 0.4rem 0.85rem;
-  background: var(--navy-50);
-  border: 1px solid var(--navy-100);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  color: var(--navy);
+  background: var(--bg-card);
+  color: var(--text-secondary);
   font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: 1rem;
+  font-family: inherit;
+  transition: all 0.15s;
 }
 
-.pipeline-badge .dot {
-  width: 7px;
-  height: 7px;
-  background: var(--positive);
-  border-radius: 50%;
+.back-btn:hover {
+  border-color: var(--navy-400);
+  color: var(--navy);
+}
+
+.report-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.report-detail-header h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--navy);
+  text-transform: capitalize;
 }
 
 /* ================================================================
-   Pipeline Steps
+   Tab Navigation
    ================================================================ */
-.pipeline-steps {
+.tab-nav {
   display: flex;
-  align-items: center;
   gap: 0;
-  margin-bottom: 2rem;
-  padding: 0;
-  background: transparent;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 2px solid var(--border);
 }
 
-.pipeline-step {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.7rem;
+.tab-btn {
+  padding: 0.6rem 1.25rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  font-size: 0.78rem;
   font-weight: 500;
-  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
   color: var(--text-muted);
+  transition: all 0.15s;
+  font-family: inherit;
   letter-spacing: 0.01em;
 }
 
-.pipeline-step.active {
+.tab-btn.active {
   color: var(--navy);
+  border-bottom-color: var(--navy);
   font-weight: 600;
 }
 
-.pipeline-step .step-num {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--navy);
-  color: var(--text-inverse);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.6rem;
-  font-weight: 700;
-  flex-shrink: 0;
+.tab-btn:hover:not(.active) {
+  color: var(--text-secondary);
 }
 
-.pipeline-arrow {
-  color: var(--border-strong);
-  font-size: 0.7rem;
-  flex-shrink: 0;
-  margin: 0 0.15rem;
+/* ================================================================
+   Report List Table
+   ================================================================ */
+.report-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.report-list-table thead th {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 2px solid var(--border);
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.report-list-table tbody tr {
+  border-bottom: 1px solid var(--border-light);
+  transition: background 0.1s;
+}
+
+.report-list-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.report-list-table tbody td {
+  padding: 0.55rem 0.65rem;
+}
+
+.report-row {
+  cursor: pointer;
+}
+
+.report-row:hover {
+  background: var(--navy-50);
+}
+
+.report-num {
+  font-weight: 700;
+  color: var(--navy);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-name {
+  font-weight: 500;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+
+.report-amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 /* ================================================================
@@ -215,20 +277,9 @@
   letter-spacing: 0.04em;
 }
 
-.tag.compliance {
-  background: var(--navy-100);
-  color: var(--navy-600);
-}
-
-.tag.ai {
-  background: var(--navy-100);
-  color: var(--navy-600);
-}
-
-.tag.financial {
-  background: var(--navy-100);
-  color: var(--navy-600);
-}
+.tag.compliance { background: var(--navy-100); color: var(--navy-600); }
+.tag.ai { background: var(--navy-100); color: var(--navy-600); }
+.tag.financial { background: var(--navy-100); color: var(--navy-600); }
 
 .card-body {
   padding: 1.25rem;
@@ -301,6 +352,54 @@
   border-radius: 3px;
   font-size: 0.7rem;
   font-weight: 600;
+}
+
+/* ================================================================
+   Placeholder Mapping Table
+   ================================================================ */
+.mapping-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.mapping-table thead th {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 2px solid var(--border);
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.mapping-table tbody tr {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mapping-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.mapping-table tbody td {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.placeholder-code {
+  background: var(--navy-50);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-light);
+  font-size: 0.72rem;
+  color: var(--navy-600);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  white-space: nowrap;
+}
+
+.original-value {
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 /* ================================================================
@@ -393,7 +492,6 @@
   color: var(--text-primary);
 }
 
-/* Comparison table */
 .comp-table {
   width: 100%;
   border-collapse: collapse;
@@ -460,7 +558,6 @@
   color: var(--text-secondary);
 }
 
-/* Detected snippets */
 .comp-details {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -566,6 +663,15 @@
   margin-bottom: 0.65rem;
 }
 
+.analysis-totals {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
 /* ================================================================
    Processing Meta
    ================================================================ */
@@ -594,260 +700,164 @@
   color: var(--text-primary);
 }
 
-.analysis-totals {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1rem;
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
-}
-
 /* ================================================================
-   View Mode Tabs
+   AI Audit
    ================================================================ */
-.view-mode-tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 1.5rem;
-  border-bottom: 2px solid var(--border);
+.ai-section {
+  margin-bottom: 2rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.view-tab {
-  padding: 0.6rem 1.5rem;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  font-size: 0.78rem;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--text-muted);
-  transition: all 0.15s;
-  font-family: inherit;
-  letter-spacing: 0.01em;
-}
-
-.view-tab.active {
-  color: var(--navy);
-  border-bottom-color: var(--navy);
-  font-weight: 600;
-}
-
-.view-tab:hover:not(.active) {
-  color: var(--text-secondary);
-}
-
-/* ================================================================
-   Batch Overview Table
-   ================================================================ */
-.batch-overview-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.78rem;
-}
-
-.batch-overview-table thead th {
-  font-size: 0.65rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.5rem 0.65rem;
-  border-bottom: 2px solid var(--border);
-  text-align: left;
-  color: var(--text-muted);
-}
-
-.batch-overview-table tbody tr {
-  border-bottom: 1px solid var(--border-light);
-  transition: background 0.1s;
-}
-
-.batch-overview-table tbody tr:hover {
-  background: var(--navy-50);
-}
-
-.batch-overview-table tbody tr:last-child {
+.ai-section:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
   border-bottom: none;
 }
 
-.batch-overview-table tbody td {
-  padding: 0.55rem 0.65rem;
-}
-
-.batch-row-error {
-  opacity: 0.4;
-}
-
-.batch-num {
+.ai-section-title {
+  font-size: 0.85rem;
   font-weight: 700;
   color: var(--navy);
-  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.5rem;
 }
 
-.batch-name {
-  font-weight: 500;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.ai-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
 }
 
-.batch-amount {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.batch-pii {
-  text-align: center;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-.role-badge {
-  display: inline-block;
-  padding: 0.12rem 0.45rem;
+.ai-meta-badge {
+  background: var(--navy-100);
+  color: var(--navy-600);
+  padding: 0.2rem 0.5rem;
   border-radius: 3px;
   font-size: 0.65rem;
   font-weight: 600;
-  letter-spacing: 0.03em;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
-.role-badge.gp {
+.ai-meta-usage {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+.ai-prompt-group {
+  margin-bottom: 0.5rem;
+}
+
+.ai-prompt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+  width: 100%;
+  text-align: left;
+}
+
+.ai-prompt-toggle:hover {
+  border-color: var(--navy-400);
+  color: var(--navy);
+}
+
+.ai-prompt-block {
+  margin-top: 0.35rem;
+  padding: 0.85rem 1rem;
+  background: var(--navy-50);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  max-height: 500px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ================================================================
+   OCR Text View
+   ================================================================ */
+.ocr-view-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ocr-view-toggle button {
+  padding: 0.25rem 0.6rem;
+  border: none;
+  background: transparent;
+  font-size: 0.65rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-family: inherit;
+  border-right: 1px solid var(--border);
+  transition: all 0.15s;
+}
+
+.ocr-view-toggle button:last-child {
+  border-right: none;
+}
+
+.ocr-view-toggle button.active {
   background: var(--navy);
   color: var(--text-inverse);
 }
 
-.role-badge.lp {
-  background: var(--navy-100);
-  color: var(--navy-600);
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 0.12rem 0.4rem;
-  border-radius: 3px;
-  font-size: 0.6rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.status-badge.success {
-  background: #e8f5ee;
-  color: var(--positive);
-}
-
-.status-badge.error {
-  background: #fdeaea;
-  color: var(--negative);
-}
-
-/* ================================================================
-   Batch Profile Selector
-   ================================================================ */
-.batch-selector {
-  margin: 1.5rem 0;
-}
-
-.batch-selector-label {
-  font-size: 0.65rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  margin-bottom: 0.65rem;
-  display: block;
-}
-
-.batch-selector-grid {
+.ocr-side-by-side {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 0.5rem;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
 }
 
-.batch-profile-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  padding: 0.55rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-card);
-  cursor: pointer;
-  transition: all 0.15s;
-  text-align: left;
-  font-family: inherit;
-  color: var(--text-primary);
-}
-
-.batch-profile-btn:hover {
-  border-color: var(--navy-400);
-  background: var(--navy-50);
-}
-
-.batch-profile-btn.active {
-  border-color: var(--navy);
-  background: var(--navy-50);
-  box-shadow: inset 3px 0 0 var(--navy);
-}
-
-.batch-profile-btn.error {
-  opacity: 0.4;
-}
-
-.batch-profile-num {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--navy);
-}
-
-.batch-profile-name {
+.ocr-panel-label {
   font-size: 0.65rem;
-  font-weight: 500;
-  line-height: 1.3;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.batch-profile-role {
-  font-size: 0.58rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.05em;
   color: var(--text-muted);
+  margin-bottom: 0.5rem;
 }
 
-/* Profile Info Card */
-.profile-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+.ocr-text {
+  padding: 0.85rem 1rem;
+  background: var(--navy-50);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  max-height: 600px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
-.profile-info-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid var(--border-light);
-  font-size: 0.82rem;
-}
-
-.profile-info-row:last-child {
-  border-bottom: none;
-}
-
-.profile-info-label {
-  color: var(--text-muted);
-  font-weight: 500;
-  font-size: 0.75rem;
+.ocr-text.sanitized {
+  background: #f0f4f0;
 }
 
 /* ================================================================
@@ -920,8 +930,11 @@
   .main-grid {
     grid-template-columns: 1fr;
   }
-  .batch-selector-grid {
-    grid-template-columns: repeat(3, 1fr);
+  .comp-details {
+    grid-template-columns: 1fr;
+  }
+  .ocr-side-by-side {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -940,7 +953,7 @@
   .processing-meta {
     grid-template-columns: 1fr;
   }
-  .batch-selector-grid {
+  .analysis-totals {
     grid-template-columns: repeat(2, 1fr);
   }
 }

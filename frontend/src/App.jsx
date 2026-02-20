@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import './App.css'
 
+// --- Helpers ---
+
 const formatCurrency = (value) => {
   if (value == null) return '$0'
   const num = typeof value === 'string' ? parseFloat(value) : value
@@ -8,44 +10,134 @@ const formatCurrency = (value) => {
   return `${sign}$${Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 }
 
-const PipelineSteps = () => {
-  const steps = [
-    'PDF Ingestion',
-    'OCR Extraction',
-    'PII Detection',
-    'Sanitization',
-    'AI Extraction',
-    'Financial Analysis',
-    'Report',
-  ]
+function resolvePlaceholders(text, mapping) {
+  if (!text || !mapping) return text
+  let resolved = String(text)
+  for (const [placeholder, original] of Object.entries(mapping)) {
+    resolved = resolved.replaceAll(placeholder, original)
+  }
+  return resolved
+}
+
+function cleanDirName(dir) {
+  // Strip timestamp suffix for display
+  return dir.replace(/_\d{8}_\d{6}$/, '').replace(/_/g, ' ')
+}
+
+// ================================================================
+//  Report List (landing page)
+// ================================================================
+
+function ReportList({ onSelect }) {
+  const [reports, setReports] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/reports')
+      .then(r => r.json())
+      .then(data => { setReports(data.reports || []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  if (loading) return <div className="loading"><div className="loading-spinner" /><p>Loading reports...</p></div>
+
+  if (reports.length === 0) {
+    return (
+      <div className="error-state">
+        <h2>No Reports Found</h2>
+        <p>Run the Dagster pipeline first to process K-1 documents.</p>
+        <code>cd pipeline && dg dev</code>
+        <p style={{ fontSize: '0.78rem', marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+          Then materialize all assets or drop PDFs into data/dropoff/
+        </p>
+      </div>
+    )
+  }
+
   return (
-    <div className="pipeline-steps">
-      {steps.map((label, i) => (
-        <span key={i} style={{ display: 'contents' }}>
-          <div className="pipeline-step active">
-            <span className="step-num">{i + 1}</span>
-            {label}
-          </div>
-          {i < steps.length - 1 && <span className="pipeline-arrow">/</span>}
-        </span>
+    <div className="card full-width">
+      <div className="card-header">
+        <h2>Processed K-1 Reports</h2>
+        <span className="tag financial">{reports.length} reports</span>
+      </div>
+      <div className="card-body">
+        <table className="report-list-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Partnership</th>
+              <th>Type</th>
+              <th>Year</th>
+              <th style={{ textAlign: 'right' }}>Net Income</th>
+              <th style={{ textAlign: 'right' }}>Capital End</th>
+              <th style={{ textAlign: 'center' }}>PII</th>
+              <th>Processed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {reports.map((r, i) => (
+              <tr key={r.directory} className="report-row" onClick={() => onSelect(r.directory)}>
+                <td className="report-num">{String(i + 1).padStart(2, '0')}</td>
+                <td className="report-name">{cleanDirName(r.directory)}</td>
+                <td>{r.partner_type || '-'}</td>
+                <td>{r.tax_year || '-'}</td>
+                <td className={`report-amount ${(r.net_taxable_income || 0) < 0 ? 'amount-negative' : 'amount-positive'}`}>
+                  {r.net_taxable_income != null ? formatCurrency(r.net_taxable_income) : '-'}
+                </td>
+                <td className="report-amount">
+                  {r.capital_account_ending != null ? formatCurrency(r.capital_account_ending) : '-'}
+                </td>
+                <td style={{ textAlign: 'center' }}>{r.pii_entities}</td>
+                <td>{r.processed_at ? new Date(r.processed_at).toLocaleDateString() : '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ================================================================
+//  Tab Navigation
+// ================================================================
+
+const TABS = [
+  { key: 'summary', label: 'Summary' },
+  { key: 'pii', label: 'PII & Redactions' },
+  { key: 'ai', label: 'AI Audit' },
+  { key: 'ocr', label: 'OCR Text' },
+  { key: 'meta', label: 'Metadata' },
+]
+
+function TabNav({ active, onChange }) {
+  return (
+    <div className="tab-nav">
+      {TABS.map(t => (
+        <button key={t.key} className={`tab-btn ${active === t.key ? 'active' : ''}`} onClick={() => onChange(t.key)}>
+          {t.label}
+        </button>
       ))}
     </div>
   )
 }
 
-const StatsGrid = ({ data }) => {
-  const k1 = data.structured_k1 || data.k1_data || {}
+// ================================================================
+//  Tab 1: Summary
+// ================================================================
+
+function StatsGrid({ data, mapping }) {
+  const k1 = data.k1_data || {}
   const analysis = data.financial_analysis || {}
   const piiStats = data.pii_stats || {}
 
-  const capGains = (k1.net_long_term_capital_gain ?? k1.long_term_capital_gains ?? 0) +
-    (k1.net_short_term_capital_gain ?? k1.short_term_capital_gains ?? 0)
+  const capGains = (k1.long_term_capital_gains ?? 0) + (k1.short_term_capital_gains ?? 0)
 
   return (
     <div className="stats-grid">
       <div className="stat-card">
         <div className="stat-label">Total Income</div>
-        <div className={`stat-value ${(analysis.total_income || k1.ordinary_business_income || 0) >= 0 ? 'positive' : 'negative'}`}>
+        <div className={`stat-value ${(analysis.total_income || 0) >= 0 ? 'positive' : 'negative'}`}>
           {formatCurrency(analysis.total_income || k1.ordinary_business_income)}
         </div>
         <div className="stat-sub">Ordinary + Capital + Other</div>
@@ -59,21 +151,19 @@ const StatsGrid = ({ data }) => {
       </div>
       <div className="stat-card">
         <div className="stat-label">PII Entities Detected</div>
-        <div className="stat-value">{piiStats.total_entities || piiStats.total_entities_detected || 0}</div>
-        <div className="stat-sub">{Object.keys(piiStats.entity_types || piiStats.entity_counts || {}).length} types identified</div>
+        <div className="stat-value">{piiStats.total_entities_detected || 0}</div>
+        <div className="stat-sub">{Object.keys(piiStats.entity_counts || {}).length} types identified</div>
       </div>
       <div className="stat-card">
         <div className="stat-label">Ending Capital</div>
-        <div className="stat-value">
-          {formatCurrency(k1.capital_account_ending || k1.ending_capital_account)}
-        </div>
+        <div className="stat-value">{formatCurrency(k1.capital_account_ending)}</div>
         <div className="stat-sub">Partner capital account</div>
       </div>
     </div>
   )
 }
 
-const FinancialDataCard = ({ k1 }) => {
+function FinancialDataCard({ k1, mapping }) {
   if (!k1) return null
 
   const rows = [
@@ -82,10 +172,13 @@ const FinancialDataCard = ({ k1 }) => {
     ['Interest Income', k1.interest_income],
     ['Ordinary Dividends', k1.ordinary_dividends],
     ['Qualified Dividends', k1.qualified_dividends],
-    ['Net Short-Term Capital Gain', k1.net_short_term_capital_gain ?? k1.short_term_capital_gains],
-    ['Net Long-Term Capital Gain', k1.net_long_term_capital_gain ?? k1.long_term_capital_gains],
-    ['Rental Real Estate Income', k1.rental_real_estate_income ?? k1.net_rental_real_estate_income],
+    ['Net Short-Term Capital Gain', k1.short_term_capital_gains],
+    ['Net Long-Term Capital Gain', k1.long_term_capital_gains],
+    ['Rental Real Estate Income', k1.rental_real_estate_income],
     ['Section 179 Deduction', k1.section_179_deduction],
+    ['Self-Employment Earnings', k1.self_employment_earnings],
+    ['Foreign Taxes Paid', k1.foreign_taxes_paid],
+    ['QBI Deduction', k1.qbi_deduction],
     ['Distributions', k1.distributions],
   ].filter(([, v]) => v != null)
 
@@ -96,6 +189,13 @@ const FinancialDataCard = ({ k1 }) => {
         <span className="tag financial">AI Extracted</span>
       </div>
       <div className="card-body">
+        {k1.partnership_name && (
+          <div style={{ marginBottom: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            <strong>Partnership:</strong> {resolvePlaceholders(k1.partnership_name, mapping)}
+            {k1.partner_type && <> &middot; <strong>Role:</strong> {k1.partner_type}</>}
+            {k1.partner_share_percentage != null && <> &middot; <strong>Share:</strong> {k1.partner_share_percentage}%</>}
+          </div>
+        )}
         <table className="financial-table">
           <tbody>
             {rows.map(([label, value]) => (
@@ -108,7 +208,7 @@ const FinancialDataCard = ({ k1 }) => {
             ))}
           </tbody>
         </table>
-        {(k1.capital_account_beginning != null || k1.beginning_capital_account != null) && (
+        {k1.capital_account_beginning != null && (
           <div style={{ marginTop: '1.25rem' }}>
             <h3 style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Capital Account Movement
@@ -121,12 +221,12 @@ const FinancialDataCard = ({ k1 }) => {
   )
 }
 
-const CapitalAccountBar = ({ k1 }) => {
-  const beginning = k1.capital_account_beginning || k1.beginning_capital_account || 0
+function CapitalAccountBar({ k1 }) {
+  const beginning = k1.capital_account_beginning || 0
   const contributed = k1.capital_contributed || 0
   const increase = k1.current_year_increase || k1.ordinary_business_income || 0
   const distributions = Math.abs(k1.distributions || 0)
-  const ending = k1.capital_account_ending || k1.ending_capital_account || 0
+  const ending = k1.capital_account_ending || 0
 
   const total = beginning + contributed + increase
   if (total === 0) return null
@@ -141,14 +241,7 @@ const CapitalAccountBar = ({ k1 }) => {
     <>
       <div className="capital-bar-track">
         {segments.map((seg) => (
-          <div
-            key={seg.label}
-            className="capital-bar-segment"
-            style={{
-              width: `${(seg.value / total) * 100}%`,
-              background: seg.color,
-            }}
-          >
+          <div key={seg.label} className="capital-bar-segment" style={{ width: `${(seg.value / total) * 100}%`, background: seg.color }}>
             {seg.value > 0 ? formatCurrency(seg.value) : ''}
           </div>
         ))}
@@ -172,150 +265,7 @@ const CapitalAccountBar = ({ k1 }) => {
   )
 }
 
-const PIICard = ({ piiStats }) => {
-  if (!piiStats) return null
-
-  const entityTypes = piiStats.entity_types || piiStats.entity_counts || {}
-  const sortedTypes = Object.entries(entityTypes).sort((a, b) => b[1] - a[1])
-
-  return (
-    <div className="card">
-      <div className="card-header">
-        <h2>PII Detection Report</h2>
-        <span className="tag compliance">Compliance</span>
-      </div>
-      <div className="card-body">
-        <div className="pii-entities">
-          {sortedTypes.map(([type, count]) => (
-            <div key={type} className="pii-entity">
-              <span className="pii-entity-type">{type.replace(/_/g, ' ')}</span>
-              <span className="pii-entity-count">{count}</span>
-            </div>
-          ))}
-          {sortedTypes.length === 0 && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>No PII entities detected</p>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const PIIComparisonCard = ({ comparison }) => {
-  if (!comparison) return null
-
-  const modes = [
-    { key: 'presidio_only', label: 'Presidio', color: 'var(--navy)' },
-    { key: 'gliner_only', label: 'GLiNER', color: 'var(--navy-500)' },
-    { key: 'combined', label: 'Combined', color: 'var(--navy-400)' },
-  ]
-
-  const allTypes = [...new Set(
-    modes.flatMap(m => Object.keys(comparison[m.key]?.counts || {}))
-  )].sort()
-
-  const maxCount = Math.max(
-    ...modes.map(m => comparison[m.key]?.total || 0), 1
-  )
-
-  const getEntities = (modeKey) => {
-    return (comparison[modeKey]?.entities || [])
-      .filter(e => e.score >= 0.4)
-      .sort((a, b) => b.score - a.score)
-  }
-
-  return (
-    <div className="card full-width">
-      <div className="card-header">
-        <h2>PII Detection — Model Comparison</h2>
-        <span className="tag compliance">Presidio vs GLiNER</span>
-      </div>
-      <div className="card-body">
-        <div className="comp-totals">
-          {modes.map(m => (
-            <div key={m.key} className="comp-total-row">
-              <div className="comp-total-label">{m.label}</div>
-              <div className="comp-total-bar-track">
-                <div
-                  className="comp-total-bar-fill"
-                  style={{
-                    width: `${((comparison[m.key]?.total || 0) / maxCount) * 100}%`,
-                    background: m.color,
-                  }}
-                />
-              </div>
-              <div className="comp-total-count">
-                {comparison[m.key]?.total || 0}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <table className="comp-table">
-          <thead>
-            <tr>
-              <th>Entity Type</th>
-              {modes.map(m => (
-                <th key={m.key}>{m.label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {allTypes.map(type => {
-              const cells = modes.map(m => comparison[m.key]?.counts?.[type] || 0)
-              const rowMax = Math.max(...cells, 1)
-              return (
-                <tr key={type}>
-                  <td className="comp-type-cell">{type.replace(/_/g, ' ')}</td>
-                  {modes.map((m, i) => (
-                    <td key={m.key}>
-                      <div className="comp-cell">
-                        <div className="comp-cell-bar-track">
-                          <div
-                            className="comp-cell-bar-fill"
-                            style={{
-                              width: cells[i] > 0 ? `${(cells[i] / rowMax) * 100}%` : '0%',
-                              background: m.color,
-                            }}
-                          />
-                        </div>
-                        <span className="comp-cell-count">{cells[i]}</span>
-                      </div>
-                    </td>
-                  ))}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-
-        <div className="comp-details">
-          {modes.map(m => {
-            const entities = getEntities(m.key)
-            return (
-              <div key={m.key} className="comp-detail-col">
-                <div className="comp-detail-heading">
-                  {m.label} — {entities.length} high-confidence
-                </div>
-                <div className="comp-snippet-list">
-                  {entities.map((e, i) => (
-                    <div key={i} className="comp-snippet" style={{ borderLeftColor: m.color }}>
-                      <span className="comp-snippet-type">{e.entity_type}</span>
-                      <code className="comp-snippet-text">{e.text_snippet.replace(/\n/g, ' ').slice(0, 40)}</code>
-                      <span className="comp-snippet-score">{(e.score * 100).toFixed(0)}%</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const AnalysisCard = ({ analysis }) => {
+function AnalysisCard({ analysis }) {
   if (!analysis) return null
 
   return (
@@ -368,8 +318,332 @@ const AnalysisCard = ({ analysis }) => {
   )
 }
 
-const ProcessingMeta = ({ metadata }) => {
-  if (!metadata) return null
+function SummaryTab({ data, mapping }) {
+  const pr = data.pipeline_results || {}
+  return (
+    <>
+      <StatsGrid data={pr} mapping={mapping} />
+      <div className="main-grid">
+        <FinancialDataCard k1={pr.k1_data} mapping={mapping} />
+        <AnalysisCard analysis={pr.financial_analysis} />
+      </div>
+    </>
+  )
+}
+
+// ================================================================
+//  Tab 2: PII & Redactions
+// ================================================================
+
+function PIICard({ piiStats }) {
+  if (!piiStats) return null
+  const entityTypes = piiStats.entity_counts || {}
+  const sortedTypes = Object.entries(entityTypes).sort((a, b) => b[1] - a[1])
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>PII Detection Report</h2>
+        <span className="tag compliance">Compliance</span>
+      </div>
+      <div className="card-body">
+        <div className="pii-entities">
+          {sortedTypes.map(([type, count]) => (
+            <div key={type} className="pii-entity">
+              <span className="pii-entity-type">{type.replace(/_/g, ' ')}</span>
+              <span className="pii-entity-count">{count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PIIComparisonCard({ comparison }) {
+  if (!comparison) return null
+
+  const modes = [
+    { key: 'presidio_only', label: 'Presidio', color: 'var(--navy)' },
+    { key: 'gliner_only', label: 'GLiNER', color: 'var(--navy-500)' },
+    { key: 'combined', label: 'Combined', color: 'var(--navy-400)' },
+  ]
+
+  const allTypes = [...new Set(
+    modes.flatMap(m => Object.keys(comparison[m.key]?.counts || {}))
+  )].sort()
+
+  const maxCount = Math.max(...modes.map(m => comparison[m.key]?.total || 0), 1)
+
+  const getEntities = (modeKey) => {
+    return (comparison[modeKey]?.entities || [])
+      .filter(e => e.score >= 0.4)
+      .sort((a, b) => b.score - a.score)
+  }
+
+  return (
+    <div className="card full-width">
+      <div className="card-header">
+        <h2>PII Detection — Model Comparison</h2>
+        <span className="tag compliance">Presidio vs GLiNER</span>
+      </div>
+      <div className="card-body">
+        <div className="comp-totals">
+          {modes.map(m => (
+            <div key={m.key} className="comp-total-row">
+              <div className="comp-total-label">{m.label}</div>
+              <div className="comp-total-bar-track">
+                <div className="comp-total-bar-fill" style={{ width: `${((comparison[m.key]?.total || 0) / maxCount) * 100}%`, background: m.color }} />
+              </div>
+              <div className="comp-total-count">{comparison[m.key]?.total || 0}</div>
+            </div>
+          ))}
+        </div>
+
+        <table className="comp-table">
+          <thead>
+            <tr>
+              <th>Entity Type</th>
+              {modes.map(m => <th key={m.key}>{m.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {allTypes.map(type => {
+              const cells = modes.map(m => comparison[m.key]?.counts?.[type] || 0)
+              const rowMax = Math.max(...cells, 1)
+              return (
+                <tr key={type}>
+                  <td className="comp-type-cell">{type.replace(/_/g, ' ')}</td>
+                  {modes.map((m, i) => (
+                    <td key={m.key}>
+                      <div className="comp-cell">
+                        <div className="comp-cell-bar-track">
+                          <div className="comp-cell-bar-fill" style={{ width: cells[i] > 0 ? `${(cells[i] / rowMax) * 100}%` : '0%', background: m.color }} />
+                        </div>
+                        <span className="comp-cell-count">{cells[i]}</span>
+                      </div>
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+
+        <div className="comp-details">
+          {modes.map(m => {
+            const entities = getEntities(m.key)
+            return (
+              <div key={m.key} className="comp-detail-col">
+                <div className="comp-detail-heading">{m.label} — {entities.length} high-confidence</div>
+                <div className="comp-snippet-list">
+                  {entities.map((e, i) => (
+                    <div key={i} className="comp-snippet" style={{ borderLeftColor: m.color }}>
+                      <span className="comp-snippet-type">{e.entity_type}</span>
+                      <code className="comp-snippet-text">{e.text_snippet.replace(/\n/g, ' ').slice(0, 40)}</code>
+                      <span className="comp-snippet-score">{(e.score * 100).toFixed(0)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PlaceholderMappingCard({ mapping }) {
+  if (!mapping) return null
+  const entries = Object.entries(mapping)
+
+  return (
+    <div className="card full-width">
+      <div className="card-header">
+        <h2>PII Placeholder Mapping</h2>
+        <span className="tag compliance">{entries.length} unique entities</span>
+      </div>
+      <div className="card-body">
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+          Each unique PII value gets a numbered placeholder. This mapping enables reversibility.
+        </p>
+        <table className="mapping-table">
+          <thead>
+            <tr>
+              <th>Placeholder</th>
+              <th>Original Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map(([placeholder, original]) => (
+              <tr key={placeholder}>
+                <td><code className="placeholder-code">{placeholder}</code></td>
+                <td className="original-value">{original.replace(/\n/g, ' ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PIITab({ data }) {
+  const pr = data.pipeline_results || {}
+  return (
+    <div className="main-grid">
+      <PIICard piiStats={pr.pii_stats} />
+      <PlaceholderMappingCard mapping={data.placeholder_mapping} />
+      <PIIComparisonCard comparison={pr.pii_comparison} />
+    </div>
+  )
+}
+
+// ================================================================
+//  Tab 3: AI Audit
+// ================================================================
+
+function AIInteractionSection({ title, interaction }) {
+  if (!interaction) return null
+
+  const [expandedPrompt, setExpandedPrompt] = useState(null)
+
+  const toggle = (key) => setExpandedPrompt(prev => prev === key ? null : key)
+
+  // Parse the response from raw_messages
+  const responseMsg = interaction.raw_messages?.find(m => m.role === 'response')
+  const toolCallArgs = responseMsg?.tool_calls?.[0]?.args
+  let parsedResponse = null
+  if (toolCallArgs) {
+    try { parsedResponse = JSON.parse(toolCallArgs) } catch { parsedResponse = toolCallArgs }
+  }
+
+  return (
+    <div className="ai-section">
+      <h3 className="ai-section-title">{title}</h3>
+      <div className="ai-meta-row">
+        <span className="ai-meta-badge">{interaction.model || 'unknown'}</span>
+        {interaction.usage && <span className="ai-meta-usage">{interaction.usage}</span>}
+      </div>
+
+      <div className="ai-prompt-group">
+        <button className="ai-prompt-toggle" onClick={() => toggle('system')}>
+          {expandedPrompt === 'system' ? '[-]' : '[+]'} System Prompt
+        </button>
+        {expandedPrompt === 'system' && (
+          <pre className="ai-prompt-block">{interaction.system_prompt}</pre>
+        )}
+      </div>
+
+      <div className="ai-prompt-group">
+        <button className="ai-prompt-toggle" onClick={() => toggle('user')}>
+          {expandedPrompt === 'user' ? '[-]' : '[+]'} User Prompt
+        </button>
+        {expandedPrompt === 'user' && (
+          <pre className="ai-prompt-block">{interaction.user_prompt}</pre>
+        )}
+      </div>
+
+      {interaction.output_schema && (
+        <div className="ai-prompt-group">
+          <button className="ai-prompt-toggle" onClick={() => toggle('schema')}>
+            {expandedPrompt === 'schema' ? '[-]' : '[+]'} Output Schema ({interaction.output_schema.title})
+          </button>
+          {expandedPrompt === 'schema' && (
+            <pre className="ai-prompt-block">{JSON.stringify(interaction.output_schema, null, 2)}</pre>
+          )}
+        </div>
+      )}
+
+      {parsedResponse && (
+        <div className="ai-prompt-group">
+          <button className="ai-prompt-toggle" onClick={() => toggle('response')}>
+            {expandedPrompt === 'response' ? '[-]' : '[+]'} Model Response
+          </button>
+          {expandedPrompt === 'response' && (
+            <pre className="ai-prompt-block">{typeof parsedResponse === 'string' ? parsedResponse : JSON.stringify(parsedResponse, null, 2)}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AIAuditTab({ data }) {
+  const ai = data.ai_interactions
+  if (!ai) return <div className="card full-width"><div className="card-body"><p style={{ color: 'var(--text-muted)' }}>No AI interaction data available (k1_report.json not found in output).</p></div></div>
+
+  return (
+    <div className="card full-width">
+      <div className="card-header">
+        <h2>AI Interaction Audit Trail</h2>
+        <span className="tag ai">Full prompts &amp; responses</span>
+      </div>
+      <div className="card-body">
+        <AIInteractionSection title="Step 1: Structured Data Extraction" interaction={ai.extraction} />
+        <AIInteractionSection title="Step 2: Financial Analysis" interaction={ai.analysis} />
+      </div>
+    </div>
+  )
+}
+
+// ================================================================
+//  Tab 4: OCR Text
+// ================================================================
+
+function OCRTab({ data }) {
+  const [view, setView] = useState('side-by-side')
+  const ocrText = data.ocr_text
+  const sanitizedText = data.sanitized_text
+
+  if (!ocrText) {
+    return (
+      <div className="card full-width">
+        <div className="card-body">
+          <p style={{ color: 'var(--text-muted)' }}>No OCR text available (staging data not found).</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card full-width">
+      <div className="card-header">
+        <h2>OCR Text</h2>
+        <div className="ocr-view-toggle">
+          <button className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>Raw</button>
+          <button className={view === 'sanitized' ? 'active' : ''} onClick={() => setView('sanitized')}>Sanitized</button>
+          <button className={view === 'side-by-side' ? 'active' : ''} onClick={() => setView('side-by-side')}>Side by Side</button>
+        </div>
+      </div>
+      <div className="card-body">
+        {view === 'side-by-side' ? (
+          <div className="ocr-side-by-side">
+            <div className="ocr-panel">
+              <div className="ocr-panel-label">Raw OCR Text</div>
+              <pre className="ocr-text">{ocrText}</pre>
+            </div>
+            <div className="ocr-panel">
+              <div className="ocr-panel-label">Sanitized (PII Redacted)</div>
+              <pre className="ocr-text sanitized">{sanitizedText || 'Not available'}</pre>
+            </div>
+          </div>
+        ) : (
+          <pre className="ocr-text">{view === 'raw' ? ocrText : (sanitizedText || 'Not available')}</pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ================================================================
+//  Tab 5: Metadata
+// ================================================================
+
+function MetadataTab({ data }) {
+  const pr = data.pipeline_results || {}
+  const metadata = pr.processing_metadata || {}
 
   return (
     <div className="card full-width">
@@ -378,197 +652,79 @@ const ProcessingMeta = ({ metadata }) => {
       </div>
       <div className="card-body">
         <div className="processing-meta">
-          <div className="meta-item">
-            <div className="meta-label">Source Document</div>
-            <div className="meta-value">{metadata.source_file || 'K-1 Schedule'}</div>
-          </div>
-          <div className="meta-item">
-            <div className="meta-label">Pages Processed</div>
-            <div className="meta-value">{metadata.page_count || 'N/A'}</div>
-          </div>
-          <div className="meta-item">
-            <div className="meta-label">Processing Date</div>
-            <div className="meta-value">{(metadata.processed_at || metadata.report_generated_at) ? new Date(metadata.processed_at || metadata.report_generated_at).toLocaleDateString() : 'N/A'}</div>
-          </div>
+          {Object.entries(metadata).map(([key, value]) => (
+            <div key={key} className="meta-item">
+              <div className="meta-label">{key.replace(/_/g, ' ')}</div>
+              <div className="meta-value">{value ? new Date(value).toLocaleString() : 'N/A'}</div>
+            </div>
+          ))}
         </div>
+        {pr.output_files && (
+          <>
+            <h3 style={{ fontSize: '0.75rem', fontWeight: 600, margin: '1.25rem 0 0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Output Files
+            </h3>
+            <div className="processing-meta">
+              {Object.entries(pr.output_files).map(([key, value]) => (
+                <div key={key} className="meta-item">
+                  <div className="meta-label">{key.replace(/_/g, ' ')}</div>
+                  <div className="meta-value" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
 }
 
-/* ================================================================
-   Batch Mode Components
-   ================================================================ */
+// ================================================================
+//  Report Detail
+// ================================================================
 
-const BatchOverviewCard = ({ batchData }) => {
-  if (!batchData) return null
-
-  const profiles = batchData.profiles || []
-  const successful = profiles.filter(p => p.status === 'success')
-
-  return (
-    <div className="card full-width">
-      <div className="card-header">
-        <h2>Batch Processing Overview</h2>
-        <span className="tag financial">{successful.length}/{profiles.length} Processed</span>
-      </div>
-      <div className="card-body">
-        <table className="batch-overview-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Partnership</th>
-              <th>Entity</th>
-              <th>Role</th>
-              <th style={{ textAlign: 'right' }}>Net Income</th>
-              <th style={{ textAlign: 'right' }}>Capital End</th>
-              <th style={{ textAlign: 'center' }}>PII</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {profiles.map((p) => {
-              const k1 = p.k1_data || {}
-              const fa = p.financial_analysis || {}
-              return (
-                <tr key={p.profile_number} className={p.status === 'error' ? 'batch-row-error' : ''}>
-                  <td className="batch-num">{String(p.profile_number).padStart(2, '0')}</td>
-                  <td className="batch-name">{p.partnership_name}</td>
-                  <td>{p.entity_type || '-'}</td>
-                  <td>
-                    <span className={`role-badge ${p.is_general_partner ? 'gp' : 'lp'}`}>
-                      {p.is_general_partner ? 'GP' : 'LP'}
-                    </span>
-                  </td>
-                  <td className={`batch-amount ${(fa.net_taxable_income || 0) < 0 ? 'amount-negative' : 'amount-positive'}`}>
-                    {p.status === 'success' ? formatCurrency(fa.net_taxable_income) : '-'}
-                  </td>
-                  <td className="batch-amount">
-                    {p.status === 'success' ? formatCurrency(k1.capital_account_ending) : '-'}
-                  </td>
-                  <td className="batch-pii">{p.pii_entities_found ?? '-'}</td>
-                  <td>
-                    <span className={`status-badge ${p.status}`}>
-                      {p.status === 'success' ? 'OK' : 'ERR'}
-                    </span>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-const BatchProfileSelector = ({ profiles, selected, onSelect }) => {
-  return (
-    <div className="batch-selector">
-      <label className="batch-selector-label">Select Profile</label>
-      <div className="batch-selector-grid">
-        {profiles.map((p) => (
-          <button
-            key={p.profile_number}
-            className={`batch-profile-btn ${selected === p.profile_number ? 'active' : ''} ${p.status === 'error' ? 'error' : ''}`}
-            onClick={() => onSelect(p.profile_number)}
-          >
-            <span className="batch-profile-num">{String(p.profile_number).padStart(2, '0')}</span>
-            <span className="batch-profile-name">{p.partnership_name}</span>
-            <span className="batch-profile-role">
-              {p.is_general_partner ? 'GP' : 'LP'} / {p.entity_type || 'Individual'}
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-const ViewModeTabs = ({ mode, onChangeMode, hasSingle, hasBatch }) => {
-  return (
-    <div className="view-mode-tabs">
-      {hasSingle && (
-        <button
-          className={`view-tab ${mode === 'single' ? 'active' : ''}`}
-          onClick={() => onChangeMode('single')}
-        >
-          Single K-1 Analysis
-        </button>
-      )}
-      {hasBatch && (
-        <button
-          className={`view-tab ${mode === 'batch' ? 'active' : ''}`}
-          onClick={() => onChangeMode('batch')}
-        >
-          Batch Processing (10 Profiles)
-        </button>
-      )}
-    </div>
-  )
-}
-
-/* ================================================================
-   App
-   ================================================================ */
-
-function App() {
-  const [singleData, setSingleData] = useState(null)
-  const [batchData, setBatchData] = useState(null)
+function ReportDetail({ dirName, onBack }) {
+  const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [viewMode, setViewMode] = useState('single')
-  const [selectedProfile, setSelectedProfile] = useState(1)
+  const [tab, setTab] = useState('summary')
 
   useEffect(() => {
-    Promise.allSettled([
-      fetch('/pipeline_results.json').then(r => r.ok ? r.json() : null),
-      fetch('/batch/batch_pipeline_results.json').then(r => r.ok ? r.json() : null),
-    ]).then(([singleResult, batchResult]) => {
-      const single = singleResult.status === 'fulfilled' ? singleResult.value : null
-      const batch = batchResult.status === 'fulfilled' ? batchResult.value : null
-      setSingleData(single)
-      setBatchData(batch)
-      if (batch && !single) setViewMode('batch')
-      else if (single) setViewMode('single')
-      setLoading(false)
-    })
-  }, [])
+    fetch(`/api/reports/${encodeURIComponent(dirName)}`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [dirName])
 
-  if (loading) {
-    return (
-      <div className="app">
-        <div className="loading">
-          <div className="loading-spinner" />
-          <p>Loading pipeline results...</p>
-        </div>
+  if (loading) return <div className="loading"><div className="loading-spinner" /><p>Loading report...</p></div>
+  if (!data) return <div className="error-state"><h2>Failed to load report</h2></div>
+
+  const mapping = data.placeholder_mapping
+  const pr = data.pipeline_results || {}
+  const displayName = resolvePlaceholders(pr.k1_data?.partnership_name, mapping) || cleanDirName(dirName)
+
+  return (
+    <>
+      <button className="back-btn" onClick={onBack}>Back to reports</button>
+      <div className="report-detail-header">
+        <h2>{displayName}</h2>
+        {pr.k1_data?.tax_year && <span className="tag financial">Tax Year {pr.k1_data.tax_year}</span>}
       </div>
-    )
-  }
+      <TabNav active={tab} onChange={setTab} />
+      {tab === 'summary' && <SummaryTab data={data} mapping={mapping} />}
+      {tab === 'pii' && <PIITab data={data} />}
+      {tab === 'ai' && <AIAuditTab data={data} />}
+      {tab === 'ocr' && <OCRTab data={data} />}
+      {tab === 'meta' && <MetadataTab data={data} />}
+    </>
+  )
+}
 
-  if (!singleData && !batchData) {
-    return (
-      <div className="app">
-        <div className="error-state">
-          <h2>Pipeline Results Not Found</h2>
-          <p>
-            Run the Dagster pipeline first to generate results. The frontend reads from the pipeline output file.
-          </p>
-          <code>cd pipeline && uv run dg dev</code>
-          <p style={{ fontSize: '0.78rem', marginTop: '0.5rem', color: 'var(--text-muted)' }}>
-            Then materialize all assets in the Dagster UI at localhost:3000
-          </p>
-        </div>
-      </div>
-    )
-  }
+// ================================================================
+//  App
+// ================================================================
 
-  const hasSingle = !!singleData
-  const hasBatch = !!batchData
-
-  const batchProfiles = batchData?.profiles || []
-  const currentProfile = batchProfiles.find(p => p.profile_number === selectedProfile)
-  const profileK1 = currentProfile?.k1_data || {}
-  const profileAnalysis = currentProfile?.financial_analysis || {}
+function App() {
+  const [selectedReport, setSelectedReport] = useState(null)
 
   return (
     <div className="app">
@@ -577,95 +733,15 @@ function App() {
           <div className="header-icon">K-1</div>
           <div>
             <h1>K-1 Document Intelligence</h1>
-            <p>Automated tax document analysis with PII protection</p>
+            <p>Pipeline audit dashboard</p>
           </div>
-        </div>
-        <div className="pipeline-badge">
-          <span className="dot" />
-          Pipeline Complete
         </div>
       </div>
 
-      <PipelineSteps />
-
-      {(hasSingle && hasBatch) && (
-        <ViewModeTabs mode={viewMode} onChangeMode={setViewMode} hasSingle={hasSingle} hasBatch={hasBatch} />
-      )}
-
-      {viewMode === 'single' && singleData && (
-        <>
-          <StatsGrid data={singleData} />
-          <div className="main-grid">
-            <FinancialDataCard k1={singleData.structured_k1 || singleData.k1_data} />
-            <PIICard piiStats={singleData.pii_stats} />
-            <PIIComparisonCard comparison={singleData.pii_comparison} />
-            <AnalysisCard analysis={singleData.financial_analysis} />
-            <ProcessingMeta metadata={singleData.processing_metadata} />
-          </div>
-        </>
-      )}
-
-      {viewMode === 'batch' && batchData && (
-        <>
-          <BatchOverviewCard batchData={batchData} />
-          <BatchProfileSelector
-            profiles={batchProfiles}
-            selected={selectedProfile}
-            onSelect={setSelectedProfile}
-          />
-          {currentProfile && currentProfile.status === 'success' && (
-            <>
-              <StatsGrid data={{ k1_data: profileK1, financial_analysis: profileAnalysis, pii_stats: { total_entities_detected: currentProfile.pii_entities_found, entity_counts: {} } }} />
-              <div className="main-grid">
-                <FinancialDataCard k1={profileK1} />
-                <div className="card">
-                  <div className="card-header">
-                    <h2>Profile Details</h2>
-                    <span className={`role-badge ${currentProfile.is_general_partner ? 'gp' : 'lp'}`}>
-                      {currentProfile.is_general_partner ? 'General Partner' : 'Limited Partner'}
-                    </span>
-                  </div>
-                  <div className="card-body">
-                    <div className="profile-info">
-                      <div className="profile-info-row">
-                        <span className="profile-info-label">Partnership</span>
-                        <span>{currentProfile.partnership_name}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span className="profile-info-label">Partner</span>
-                        <span>{currentProfile.partner_name}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span className="profile-info-label">Entity Type</span>
-                        <span>{currentProfile.entity_type}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span className="profile-info-label">PII Entities</span>
-                        <span>{currentProfile.pii_entities_found} detected</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span className="profile-info-label">OCR Characters</span>
-                        <span>{(currentProfile.ocr_chars || 0).toLocaleString()}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <AnalysisCard analysis={profileAnalysis} />
-              </div>
-            </>
-          )}
-          {currentProfile && currentProfile.status === 'error' && (
-            <div className="card full-width" style={{ marginTop: '1rem' }}>
-              <div className="card-header">
-                <h2>Error — Profile {currentProfile.profile_number}</h2>
-              </div>
-              <div className="card-body">
-                <pre style={{ color: 'var(--negative)', fontSize: '0.82rem' }}>{currentProfile.error}</pre>
-              </div>
-            </div>
-          )}
-        </>
-      )}
+      {selectedReport
+        ? <ReportDetail dirName={selectedReport} onBack={() => setSelectedReport(null)} />
+        : <ReportList onSelect={setSelectedReport} />
+      }
     </div>
   )
 }
