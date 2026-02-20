@@ -20,7 +20,7 @@ graph TB
         C["raw_k1_pdf<br/><i>Ingest & encode PDF</i>"]
         D["ocr_extracted_text<br/><i>Tesseract OCR</i>"]
         E["pii_detection_report<br/><i>Presidio + GLiNER</i>"]
-        F["sanitized_text<br/><i>PII → placeholders</i>"]
+        F["sanitized_text<br/><i>PII → numbered placeholders</i>"]
         G["ai_structured_extraction<br/><i>DeepSeek → K1ExtractedData</i>"]
         H["ai_financial_analysis<br/><i>DeepSeek → FinancialAnalysis</i>"]
         I["final_report<br/><i>JSON + CSV + PDF</i>"]
@@ -70,7 +70,7 @@ graph LR
 
     subgraph Compliance
         C1["pii_detection_report<br/>3 detection modes:<br/>Presidio │ GLiNER │ Combined"]
-        C2["sanitized_text<br/>Replace PII with<br/>&lt;PERSON&gt; &lt;US_SSN&gt; etc."]
+        C2["sanitized_text<br/>Replace PII with<br/>&lt;PERSON_1&gt; &lt;US_SSN_1&gt; etc."]
     end
 
     subgraph AI["AI Analysis"]
@@ -111,8 +111,8 @@ graph TD
     PG --> Comp
     PG --> Primary["Primary PII Report<br/><code>pii_report.json</code>"]
 
-    Primary --> Anon["Anonymizer<br/>Replace entities with<br/>typed placeholders"]
-    Anon --> Safe["Sanitized Text<br/>Safe for external AI"]
+    Primary --> Anon["Anonymizer<br/>Instance-aware numbered<br/>placeholders + mapping table"]
+    Anon --> Safe["Sanitized Text<br/>Safe for external AI<br/>Reversible via mapping"]
 
     style Primary fill:#e6f4ed,stroke:#1a6b42,color:#000
     style Safe fill:#e6f4ed,stroke:#1a6b42,color:#000
@@ -221,7 +221,7 @@ graph TD
         S2["ocr_text.json<br/><i>per-page + full text</i>"]
         S3["pii_report.json<br/><i>combined PII detections</i>"]
         S4["pii_comparison.json<br/><i>Presidio vs GLiNER vs Combined</i>"]
-        S5["sanitized_text.json<br/><i>PII-redacted text</i>"]
+        S5["sanitized_text.json<br/><i>PII-redacted text + mapping</i>"]
         S6["structured_k1.json<br/><i>K1ExtractedData + AI audit trail</i>"]
         S7["financial_analysis.json<br/><i>FinancialAnalysis + AI audit trail</i>"]
     end
@@ -327,7 +327,7 @@ graph LR
 | PDF → Images | pdf2image + Poppler | Rasterize PDF pages at 300 DPI |
 | OCR | Tesseract | Extract text from page images |
 | PII Detection | Presidio + spaCy + GLiNER | Hybrid NER for comprehensive PII coverage |
-| PII Anonymization | Presidio Anonymizer | Replace entities with typed placeholders |
+| PII Anonymization | Custom instance-aware anonymizer | Replace entities with numbered placeholders (`<PERSON_1>`) + reversible mapping |
 | AI Extraction | Pydantic AI + DeepSeek | Structured data extraction from text |
 | AI Analysis | Pydantic AI + DeepSeek | Financial analysis and recommendations |
 | PDF Reports | WeasyPrint | HTML templates → professional PDFs |
