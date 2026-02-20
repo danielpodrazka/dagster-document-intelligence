@@ -377,17 +377,29 @@ dg dev    # opens at http://localhost:3000
 2. Drop PDF files into `pipeline/data/dropoff/`
 3. The sensor picks them up within 30 seconds and processes them in parallel
 
-### Frontend Dashboard
+### Audit Dashboard
+
+The frontend is a lightweight Node.js server + React app that reads directly from the pipeline output — no copy step needed.
 
 ```bash
 cd frontend
 npm install
-npm run dev    # opens at http://localhost:5173
+npm run build
+node server.js    # opens at http://localhost:3001
 ```
 
-Copy results from the pipeline output to the frontend:
+The dashboard provides a tabbed audit view for each processed K-1:
+
+- **Summary** — extracted financial data, AI analysis, capital account movement
+- **PII & Redactions** — detection report, Presidio vs GLiNER comparison, full placeholder mapping table
+- **AI Audit** — complete prompts, responses, output schemas, and token usage for both extraction and analysis steps
+- **OCR Text** — raw and sanitized text side by side
+- **Metadata** — processing timestamps and output file paths
+
+For development (hot reload):
 ```bash
-cp pipeline/data/output/*/pipeline_results.json frontend/public/
+node server.js &          # API server on port 3001
+npm run dev               # Vite dev server on port 5173 (proxies /api to 3001)
 ```
 
 ## Sample Test Profiles
