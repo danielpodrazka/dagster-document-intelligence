@@ -30,6 +30,19 @@ function deriveStagingDir(outputDirName) {
   return match ? match[1] : outputDirName
 }
 
+function resolvePlaceholders(text, mapping) {
+  if (!text || !mapping) return text
+  let resolved = String(text)
+  for (const [placeholder, original] of Object.entries(mapping)) {
+    resolved = resolved.replaceAll(placeholder, original)
+  }
+  return resolved
+}
+
+function cleanNullString(val) {
+  return val === 'null' ? null : val
+}
+
 // --- API Routes ---
 
 // List all reports
@@ -48,10 +61,15 @@ app.get('/api/reports', async (_req, res) => {
       const pii = results.pii_stats || {}
       const meta = results.processing_metadata || {}
 
+      // Load placeholder mapping from staging to resolve names
+      const runId = deriveStagingDir(dir)
+      const sanitized = await readJsonSafe(join(STAGING_DIR, runId, 'sanitized_text.json'))
+      const mapping = sanitized?.placeholder_mapping || null
+
       reports.push({
         directory: dir,
-        partnership_name: k1.partnership_name || dir,
-        partner_type: k1.partner_type || null,
+        partnership_name: resolvePlaceholders(k1.partnership_name, mapping) || dir,
+        partner_type: cleanNullString(k1.partner_type) || null,
         tax_year: k1.tax_year || null,
         net_taxable_income: analysis.net_taxable_income ?? null,
         total_income: analysis.total_income ?? null,
