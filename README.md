@@ -379,7 +379,7 @@ dg dev    # opens at http://localhost:3000
 
 ### Audit Dashboard
 
-The frontend is a lightweight Node.js server + React app that reads directly from the pipeline output — no copy step needed.
+The frontend is a lightweight Node.js server + React app that reads directly from the pipeline output.
 
 ```bash
 cd frontend
