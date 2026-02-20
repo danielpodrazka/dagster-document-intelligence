@@ -8,7 +8,7 @@ Built as an educational project demonstrating how to combine document processing
 
 ## Demo
 
-[![Demo Video](https://img.youtube.com/vi/pAILJZgnMfc/maxresdefault.jpg)](https://www.youtube.com/watch?v=pAILJZgnMfc)
+[![Demo Video](https://img.youtube.com/vi/3L-hBvwq5pk/maxresdefault.jpg)](https://youtu.be/3L-hBvwq5pk)
 
 ## Architecture Overview
 
