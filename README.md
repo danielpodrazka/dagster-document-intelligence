@@ -486,6 +486,30 @@ claude skills install dagster-io/skills
 
 Or copy the `.claude/skills/` directory into your own project.
 
+## Making It Production-Ready
+
+This project is an educational demo with local file storage and no deployment infrastructure. Here are concrete steps to take it toward production use:
+
+**Storage & Infrastructure**
+- **AWS S3 integration** — swap local file I/O for S3 using Dagster's [`S3Resource`](https://docs.dagster.io/integrations/libraries/aws/s3/s3-resource) or a custom I/O manager. The pipeline already isolates runs by directory, so the migration is straightforward
+- **Containerization** — add `Dockerfile` and `docker-compose.yml` to bundle Tesseract, Poppler, WeasyPrint, and the Python environment into a reproducible image
+- **Deploy to Dagster+** — use [Dagster+](https://dagster.io/plus) for managed orchestration, or self-host with the Dagster Helm chart on Kubernetes
+
+**Validation & Compliance**
+- **Domain-driven validation** — add checks that verify extracted K-1 data against IRS rules (e.g., Box 1 + Box 2 + Box 3 = total income, partner share percentages sum to 100% across all partners, required fields are non-null)
+- **Dagster asset checks** — use [`@asset_check`](https://docs.dagster.io/concepts/assets/asset-checks) to enforce data quality gates between pipeline stages (e.g., OCR confidence thresholds, PII detection completeness, extraction field coverage)
+- **Input validation** — verify uploaded PDFs are actually K-1 forms before processing (page count, form number detection, IRS header matching)
+
+**Reports & Output**
+- **Branded PDF reports** — replace the generic HTML templates in `pdf_templates.py` with firm-branded designs (logo, color scheme, footer disclaimers, custom typography)
+- **Database storage** — persist extracted K-1 data to PostgreSQL or a data warehouse for querying across clients and tax years
+
+**Operations**
+- **Testing** — add unit tests for PII detection accuracy, extraction field mapping, and PDF generation; integration tests for end-to-end pipeline runs
+- **CI/CD** — GitHub Actions pipeline for linting, testing, and building the Docker image on push
+- **Monitoring & alerting** — configure Dagster sensors or external tools (PagerDuty, Slack) to alert on pipeline failures, and track extraction accuracy metrics over time
+- **Authentication** — add auth to the React dashboard (currently open) and restrict access to sensitive PII data
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details. Not intended for production tax processing.
