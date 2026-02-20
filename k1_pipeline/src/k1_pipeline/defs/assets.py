@@ -844,7 +844,15 @@ def final_report() -> dg.MaterializeResult:
 
     k1_data = structured_data["extracted_data"]
     analysis = analysis_data["analysis"]
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+
+    # Create a unique output directory per run based on source PDF and timestamp
+    raw_data = json.loads((DATA_STAGING / "raw_pdf_bytes.json").read_text())
+    pdf_stem = Path(raw_data["file_name"]).stem
+    run_output = DATA_OUTPUT / f"{pdf_stem}_{now.strftime('%Y%m%d_%H%M%S')}"
+    run_output.mkdir(parents=True, exist_ok=True)
+
+    now = now.isoformat()
 
     # ---- 1. Full JSON Report ----
     full_report = {
@@ -867,11 +875,11 @@ def final_report() -> dg.MaterializeResult:
         },
     }
 
-    report_path = DATA_OUTPUT / "k1_report.json"
+    report_path = run_output / "k1_report.json"
     report_path.write_text(json.dumps(full_report, indent=2))
 
     # ---- 2. CSV Summary ----
-    csv_path = DATA_OUTPUT / "k1_summary.csv"
+    csv_path = run_output / "k1_summary.csv"
     csv_fields = [
         ("tax_year", k1_data.get("tax_year")),
         ("partnership_name", k1_data.get("partnership_name")),
@@ -947,7 +955,7 @@ def final_report() -> dg.MaterializeResult:
         },
     }
 
-    pipeline_results_path = DATA_OUTPUT / "pipeline_results.json"
+    pipeline_results_path = run_output / "pipeline_results.json"
     pipeline_results_path.write_text(json.dumps(pipeline_results, indent=2))
 
     # ---- 4. PDF Report (WeasyPrint) ----
@@ -962,7 +970,7 @@ def final_report() -> dg.MaterializeResult:
         },
         metadata={"report_generated_at": now},
     )
-    pdf_path = DATA_OUTPUT / "k1_report.pdf"
+    pdf_path = run_output / "k1_report.pdf"
     generate_pdf(pdf_html, pdf_path)
 
     pipeline_results["output_files"]["pdf_report"] = str(pdf_path)
