@@ -950,6 +950,24 @@ def final_report() -> dg.MaterializeResult:
     pipeline_results_path = DATA_OUTPUT / "pipeline_results.json"
     pipeline_results_path.write_text(json.dumps(pipeline_results, indent=2))
 
+    # ---- 4. PDF Report (WeasyPrint) ----
+    from k1_pipeline.defs.pdf_templates import render_single_report_html, generate_pdf
+
+    pdf_html = render_single_report_html(
+        k1_data=k1_data,
+        analysis=analysis,
+        pii_stats={
+            "total_entities_detected": pii_report["total_entities"],
+            "entities_redacted": pii_report["total_entities"],
+        },
+        metadata={"report_generated_at": now},
+    )
+    pdf_path = DATA_OUTPUT / "k1_report.pdf"
+    generate_pdf(pdf_html, pdf_path)
+
+    pipeline_results["output_files"]["pdf_report"] = str(pdf_path)
+    pipeline_results_path.write_text(json.dumps(pipeline_results, indent=2))
+
     return dg.MaterializeResult(
         metadata={
             "report_path": dg.MetadataValue.path(str(report_path)),
@@ -962,5 +980,6 @@ def final_report() -> dg.MaterializeResult:
             "recommendations": dg.MetadataValue.int(
                 len(analysis.get("tax_planning_recommendations", []))
             ),
+            "pdf_report": dg.MetadataValue.path(str(pdf_path)),
         }
     )

@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv",
     "en-core-web-lg",
     "pypdfform>=4.6.0",
+    "weasyprint",
 ]
 
 [dependency-groups]

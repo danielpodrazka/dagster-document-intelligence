@@ -505,6 +505,16 @@ def batch_report() -> dg.MaterializeResult:
     frontend_path = BATCH_OUTPUT / "batch_pipeline_results.json"
     frontend_path.write_text(json.dumps(frontend_payload, indent=2))
 
+    # ---- 4. PDF Report (WeasyPrint) ----
+    from k1_pipeline.defs.pdf_templates import render_batch_report_html, generate_pdf
+
+    pdf_html = render_batch_report_html(batch_results)
+    pdf_path = BATCH_OUTPUT / "batch_report.pdf"
+    generate_pdf(pdf_html, pdf_path)
+
+    frontend_payload["output_files"]["pdf_report"] = str(pdf_path)
+    frontend_path.write_text(json.dumps(frontend_payload, indent=2))
+
     # Build summary table for metadata
     rows = []
     for r in batch_results["results"]:
@@ -528,6 +538,7 @@ def batch_report() -> dg.MaterializeResult:
             "report_path": dg.MetadataValue.path(str(report_path)),
             "csv_path": dg.MetadataValue.path(str(csv_path)),
             "frontend_path": dg.MetadataValue.path(str(frontend_path)),
+            "pdf_report": dg.MetadataValue.path(str(pdf_path)),
             "batch_summary": dg.MetadataValue.md(table),
         }
     )
