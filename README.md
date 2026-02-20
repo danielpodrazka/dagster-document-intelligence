@@ -502,7 +502,7 @@ This project is an educational demo with local file storage and no deployment in
 
 **Reports & Output**
 - **Branded PDF reports** — replace the generic HTML templates in `pdf_templates.py` with firm-branded designs (logo, color scheme, footer disclaimers, custom typography)
-- **Database storage** — persist extracted K-1 data to PostgreSQL or a data warehouse for querying across clients and tax years
+- **Database storage** — persist extracted K-1 data to [DuckDB](https://duckdb.org/) on top of S3 for analytical queries across clients and tax years, with [DuckLake](https://ducklake.select/) as a catalog layer for discoverability and metadata management
 
 **Operations**
 - **Testing** — add unit tests for PII detection accuracy, extraction field mapping, and PDF generation; integration tests for end-to-end pipeline runs
