@@ -8,8 +8,6 @@ Two-track validation architecture:
 Cross-partner validation (Phase 4) is out of scope — requires cross-run data storage.
 """
 
-from __future__ import annotations
-
 import re
 from datetime import datetime, timezone
 from enum import Enum

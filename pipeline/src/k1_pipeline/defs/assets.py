@@ -395,6 +395,7 @@ def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResu
     """
     from pdf2image import convert_from_path
     from surya.detection import DetectionPredictor
+    from surya.foundation import FoundationPredictor
     from surya.recognition import RecognitionPredictor
 
     pdf_key = _run_pdf_key(s3, config.run_id)
@@ -403,10 +404,11 @@ def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResu
     # Convert PDF pages to PIL images
     images = convert_from_path(pdf_tmp, dpi=300)
 
-    # Surya processes all pages as a batch
+    # Surya v0.17: RecognitionPredictor wraps a FoundationPredictor
+    foundation = FoundationPredictor()
     det_predictor = DetectionPredictor()
-    rec_predictor = RecognitionPredictor()
-    predictions = rec_predictor(images, langs=["en"], det_predictor=det_predictor)
+    rec_predictor = RecognitionPredictor(foundation)
+    predictions = rec_predictor(images, det_predictor=det_predictor)
 
     pages_text: list[dict] = []
     full_text_parts: list[str] = []

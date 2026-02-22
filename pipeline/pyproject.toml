@@ -9,6 +9,7 @@ dependencies = [
     "spacy",
     "pydantic-ai",
     "surya-ocr",
+    "transformers>=4.56.1,<5",
     "numpy",
     "pdf2image",
     "Pillow",
@@ -42,6 +43,11 @@ root_module = "k1_pipeline"
 registry_modules = [
     "k1_pipeline.components.*",
 ]
+
+[tool.uv]
+# surya-ocr pins pillow<11 but pypdfform requires pillow>=12.
+# Pillow 12 is backwards-compatible; override surya's upper bound.
+override-dependencies = ["pillow>=12.0.0"]
 
 [tool.uv.sources]
 en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0.tar.gz" }

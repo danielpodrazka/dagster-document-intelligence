@@ -1,6 +1,6 @@
 # K-1 Document Intelligence Pipeline
 
-A data pipeline built with **Dagster** that automatically ingests IRS Schedule K-1 tax documents, detects and redacts PII, extracts structured financial data using AI, and generates professional PDF reports — with a React dashboard for visualization.
+A data pipeline built with **Dagster** that automatically ingests IRS Schedule K-1 tax documents, detects and redacts PII, extracts structured financial data using AI, validates results with a two-track system (deterministic + AI), and generates professional PDF reports — with a React dashboard for visualization. All storage is S3-backed via LocalStack for local development.
 
 Built as an educational project demonstrating how to combine document processing, compliance automation, and AI-powered analysis in a modern data orchestration framework.
 
@@ -14,17 +14,19 @@ Built as an educational project demonstrating how to combine document processing
 graph TB
     subgraph Input["Input Sources"]
         A["K-1 PDF<br/>(IRS Schedule K-1)"]
-        B["Dropoff Zone<br/><code>data/dropoff/</code>"]
+        B["Dropoff Zone<br/><code>s3://…/dropoff/</code>"]
     end
 
     subgraph Dagster["Dagster Pipeline"]
         direction TB
         C["raw_k1_pdf<br/><i>Ingest & encode PDF</i>"]
-        D["ocr_extracted_text<br/><i>Tesseract OCR</i>"]
+        D["ocr_extracted_text<br/><i>Surya OCR</i>"]
         E["pii_detection_report<br/><i>Presidio + GLiNER</i>"]
         F["sanitized_text<br/><i>PII → numbered placeholders</i>"]
         G["ai_structured_extraction<br/><i>DeepSeek → K1ExtractedData</i>"]
         H["ai_financial_analysis<br/><i>DeepSeek → FinancialAnalysis</i>"]
+        V1["k1_deterministic_validation<br/><i>20+ rule checks</i>"]
+        V2["k1_ai_validation<br/><i>DeepSeek → coherence scoring</i>"]
         I["final_report<br/><i>JSON + CSV + PDF</i>"]
     end
 
@@ -35,7 +37,7 @@ graph TB
     end
 
     subgraph Frontend["React Dashboard"]
-        M["K-1 Data Viewer<br/>PII Comparison<br/>Financial Analysis"]
+        M["K-1 Data Viewer<br/>PII Comparison<br/>Financial Analysis<br/>Validation Results"]
     end
 
     A --> C
@@ -46,9 +48,13 @@ graph TB
     E --> F
     F --> G
     G --> H
+    G --> V1
+    V1 --> V2
     E --> I
     G --> I
     H --> I
+    V1 --> I
+    V2 --> I
     I --> J
     I --> K
     I -->|success sensor| L
@@ -57,17 +63,18 @@ graph TB
 
 ## Pipeline Deep Dive
 
-Each asset transforms data through a specific stage. All intermediate results are persisted to staging as JSON for full auditability.
+Each asset transforms data through a specific stage. All intermediate results are persisted to S3 staging as JSON for full auditability.
 
 ```mermaid
 graph LR
     subgraph Ingestion
         A1["irs_k1_form_fill<br/>Downloads blank IRS form<br/>& fills with sample data"]
-        A2["raw_k1_pdf<br/>Read PDF bytes<br/>base64 encode to staging"]
+        A1b["scanned_k1_pdf<br/>Degrades filled PDF with<br/>scan artifacts for testing"]
+        A2["raw_k1_pdf<br/>Read PDF bytes<br/>base64 encode to S3 staging"]
     end
 
     subgraph Processing
-        B1["ocr_extracted_text<br/>pdf2image → Tesseract<br/>300 DPI, per-page text"]
+        B1["ocr_extracted_text<br/>pdf2image → Surya OCR<br/>300 DPI, layout-aware text"]
     end
 
     subgraph Compliance
@@ -80,10 +87,16 @@ graph LR
         D2["ai_financial_analysis<br/>DeepSeek generates<br/>FinancialAnalysis"]
     end
 
+    subgraph Validation["Validation"]
+        V1["k1_deterministic_validation<br/>20+ Pydantic-based checks<br/>arithmetic, field, capital acct"]
+        V2["k1_ai_validation<br/>DeepSeek: coherence scoring<br/>anomaly detection, OCR confidence"]
+    end
+
     subgraph Report["Output"]
         E1["final_report<br/>k1_report.json<br/>k1_summary.csv<br/>k1_report.pdf<br/>pipeline_results.json"]
     end
 
+    A1 -.-> A1b
     A1 -.-> A2
     A2 --> B1
     B1 --> C1
@@ -91,10 +104,66 @@ graph LR
     C1 --> C2
     C2 --> D1
     D1 --> D2
+    D1 --> V1
+    V1 --> V2
     C1 --> E1
     D1 --> E1
     D2 --> E1
+    V1 --> E1
+    V2 --> E1
 ```
+
+## Two-Track Validation System
+
+The pipeline validates extracted K-1 data using a dual-track architecture — deterministic rule checks run first, followed by AI judgment:
+
+```mermaid
+graph TD
+    K1["ai_structured_extraction<br/>(K1ExtractedData)"]
+
+    K1 --> T1["Track 1: Deterministic<br/>Pydantic Validators"]
+    K1 --> T2["Track 2: AI Judgment<br/>Pydantic AI + DeepSeek"]
+    T1 --> T2
+
+    subgraph Track1["Deterministic Checks (20+)"]
+        direction LR
+        AR["Arithmetic Rules<br/>ARITH-001 to ARITH-011"]
+        FC["Field Constraints<br/>FC-001 to FC-040"]
+        CA["Capital Account<br/>CAP-001"]
+    end
+
+    subgraph Track2["AI Validation"]
+        direction LR
+        CS["Coherence Scoring<br/>(0-1)"]
+        AD["Anomaly Detection<br/>per-field flags"]
+        OC["OCR Confidence<br/>estimation"]
+        PT["Partnership Type<br/>classification"]
+    end
+
+    T1 --> Track1
+    T2 --> Track2
+
+    Track1 --> Combined["K1CombinedValidation<br/>overall_status: passed │ warnings │ failed"]
+    Track2 --> Combined
+
+    style Combined fill:#e6f4ed,stroke:#1a6b42,color:#000
+```
+
+**Deterministic checks** (Track 1) run 20+ Pydantic-validated rules with severity levels:
+
+| Category | Rule IDs | Examples |
+|---|---|---|
+| Arithmetic | ARITH-001 to ARITH-011 | Qualified dividends ≤ ordinary dividends, partner share % in (0, 100], SE earnings vs partner type |
+| Field Constraints | FC-001 to FC-040 | Required fields present, non-negative enforcement, Section 179 statutory limit, magnitude sanity |
+| Capital Account | CAP-001 | Capital account reconciliation (beginning + income - distributions ≈ ending) |
+
+**AI validation** (Track 2) uses DeepSeek to assess overall data quality:
+- `overall_coherence_score` — internal consistency across all fields
+- `ocr_confidence_score` — estimated OCR extraction accuracy
+- `partnership_type_assessment` — inferred type (investment, RE, operating, etc.)
+- `anomaly_flags` — per-field anomalies with confidence scores
+- `value_reasonableness` — per-field 0-1 scores for every non-null field
+- `recommended_review_fields` — fields warranting manual inspection
 
 ## PII Detection Strategy
 
@@ -129,18 +198,42 @@ graph TD
 | PHONE_NUMBER | regex | zero-shot NER | both |
 | EMAIL_ADDRESS | regex | zero-shot NER | both |
 
+## S3 Storage Architecture
+
+All pipeline I/O is routed through an `S3Storage` ConfigurableResource backed by LocalStack for local development:
+
+```mermaid
+graph LR
+    subgraph S3["S3 Bucket: dagster-document-intelligence-etl"]
+        direction TB
+        I["input/<br/>Source PDFs"]
+        S["staging/{run_id}/<br/>Intermediate JSON"]
+        O["output/{stem}_{timestamp}/<br/>Final reports"]
+        D["dropoff/<br/>Auto-processing zone"]
+    end
+
+    subgraph LocalStack["LocalStack (localhost:4566)"]
+        S3
+    end
+
+    Pipeline["Dagster Pipeline<br/>(S3Storage resource)"] --> S3
+    Frontend["Express.js Server<br/>(AWS SDK)"] --> S3
+```
+
+The `S3Storage` Dagster resource provides key builders (`staging_key`, `output_key`, `input_key`) and read/write helpers for JSON, bytes, and text — making the migration path to real AWS S3 a configuration change.
+
 ## Dropoff Sensor & Parallel Processing
 
-The file-watching sensor enables automated processing. Drop PDFs into `data/dropoff/` and the pipeline handles everything:
+The file-watching sensor enables automated processing. Drop PDFs into `s3://…/dropoff/` and the pipeline handles everything:
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Dropoff as data/dropoff/
+    participant Dropoff as s3://…/dropoff/
     participant Sensor as k1_dropoff_sensor
     participant Dagster as Dagster Engine
     participant Pipeline as Processing Pipeline
-    participant Output as data/output/
+    participant Output as s3://…/output/
 
     User->>Dropoff: Drop 3 PDFs
 
@@ -149,7 +242,7 @@ sequenceDiagram
     end
 
     Sensor->>Sensor: Found 3 PDFs
-    Note over Sensor: Generate run_id per PDF<br/>Copy to data/input/{run_id}.pdf<br/>Move originals to processed/
+    Note over Sensor: Generate run_id per PDF<br/>Copy to input/{run_id}.pdf<br/>Move originals to processed/
 
     Sensor->>Dagster: RunRequest (PDF 1, run_id=abc_123)
     Sensor->>Dagster: RunRequest (PDF 2, run_id=def_456)
@@ -170,9 +263,9 @@ sequenceDiagram
 
 **Parallel isolation** is achieved via `K1RunConfig`:
 - Each run gets a unique `run_id` (e.g., `profile_01_1708444800`)
-- Staging directory: `data/staging/{run_id}/`
-- Input PDF: `data/input/{run_id}.pdf`
-- Output: `data/output/{pdf_stem}_{YYYYMMDD_HHMMSS}/`
+- Staging prefix: `staging/{run_id}/`
+- Input PDF: `input/{run_id}.pdf`
+- Output: `output/{pdf_stem}_{YYYYMMDD_HHMMSS}/`
 
 **Failure handling**: if a run fails, the `k1_dropoff_failure_sensor` moves the PDF from `processed/` to `failed/` for manual review.
 
@@ -181,21 +274,24 @@ sequenceDiagram
 ```
 dagster-document-intelligence/
 ├── pipeline/                             # Dagster project
-│   ├── pyproject.toml                    # Python deps (dagster, presidio, pydantic-ai, etc.)
+│   ├── pyproject.toml                    # Python deps (dagster, presidio, surya-ocr, pydantic-ai, boto3, etc.)
 │   ├── src/k1_pipeline/
 │   │   ├── definitions.py                # Entry point: @definitions + load_from_defs_folder
 │   │   └── defs/
-│   │       ├── assets.py                 # 7 pipeline assets + K1RunConfig
+│   │       ├── assets.py                 # 8 pipeline assets + K1RunConfig + Pydantic models
+│   │       ├── validation.py             # 2-track validation (deterministic + AI) + 2 assets
 │   │       ├── sensors.py                # Dropoff sensor + failure sensor
 │   │       ├── overview.py               # Aggregated overview asset + success sensor
+│   │       ├── resources.py              # S3Storage ConfigurableResource (boto3/LocalStack)
 │   │       └── pdf_templates.py          # WeasyPrint HTML→PDF templates
 │   ├── scripts/
 │   │   ├── generate_batch_k1s.py         # Generate all 10 test K-1 PDFs from IRS form
 │   │   ├── fill_irs_k1.py               # Fill official IRS form (single profile)
+│   │   ├── minify_instructions.py        # Markdown instruction minifier for AI context
 │   │   ├── generate_sample_k1.py         # Synthetic K-1 via ReportLab (unused)
 │   │   ├── k1_profiles_1_5.py            # Test profiles 1-5 (RE, VC, hedge, PE, energy)
 │   │   └── k1_profiles_6_10.py           # Test profiles 6-10 (LLC, medical, CRE, clean energy, restaurant)
-│   └── data/
+│   └── data/                             # Mirrored from S3 bucket (LocalStack)
 │       ├── input/                        # Source PDFs
 │       │   ├── archive/                  # Blank IRS forms, samples
 │       │   └── batch/                    # 10 test profile PDFs
@@ -205,12 +301,19 @@ dagster-document-intelligence/
 │           ├── processed/                # Successfully picked up
 │           └── failed/                   # Moved here on pipeline failure
 ├── frontend/                             # React + Vite dashboard
-│   ├── package.json                      # React 19, Vite 7
+│   ├── package.json                      # React 19, Vite 7, AWS SDK
+│   ├── server.js                         # Express.js API server (reads S3 via AWS SDK)
 │   ├── src/
 │   │   ├── App.jsx                       # Dashboard components
 │   │   └── App.css                       # Navy/white professional theme
 │   └── public/
-│       └── pipeline_results.json         # Copied from pipeline output
+├── docs/
+│   └── validation/                       # Comprehensive validation rules documentation
+│       ├── 01_arithmetic_rules.md        # 14 arithmetic rules with IRS references
+│       ├── 02_field_constraints.md       # Field-level constraints
+│       ├── 03_capital_account_rules.md   # Capital account validation
+│       ├── 04_cross_partner_validation.md  # Multi-partner checks (future)
+│       └── 05_validation_design.md       # Complete design spec (1400+ lines)
 └── .env                                  # DEEPSEEK_API_KEY
 ```
 
@@ -218,7 +321,7 @@ dagster-document-intelligence/
 
 ```mermaid
 graph TD
-    subgraph Staging["data/staging/{run_id}/"]
+    subgraph Staging["s3://…/staging/{run_id}/"]
         S1["raw_pdf_bytes.json<br/><i>base64 PDF + metadata</i>"]
         S2["ocr_text.json<br/><i>per-page + full text</i>"]
         S3["pii_report.json<br/><i>combined PII detections</i>"]
@@ -226,16 +329,18 @@ graph TD
         S5["sanitized_text.json<br/><i>PII-redacted text + mapping</i>"]
         S6["structured_k1.json<br/><i>K1ExtractedData + AI audit trail</i>"]
         S7["financial_analysis.json<br/><i>FinancialAnalysis + AI audit trail</i>"]
+        S8["deterministic_validation.json<br/><i>20+ rule check results</i>"]
+        S9["ai_validation.json<br/><i>K1AIValidationResult + AI audit trail</i>"]
     end
 
-    subgraph Output["data/output/{stem}_{timestamp}/"]
+    subgraph Output["s3://…/output/{stem}_{timestamp}/"]
         O1["k1_report.json<br/><i>comprehensive report</i>"]
         O2["k1_summary.csv<br/><i>flat field export</i>"]
         O3["k1_report.pdf<br/><i>professional PDF</i>"]
         O4["pipeline_results.json<br/><i>frontend data source</i>"]
     end
 
-    subgraph Overview["data/output/"]
+    subgraph Overview["s3://…/output/"]
         OV1["overview.json"]
         OV2["overview.pdf<br/><i>aggregate summary</i>"]
     end
@@ -246,9 +351,13 @@ graph TD
     S3 --> S4
     S5 --> S6
     S6 --> S7
+    S6 --> S8
+    S8 --> S9
     S3 --> O1
     S6 --> O1
     S7 --> O1
+    S8 --> O1
+    S9 --> O1
     O1 --> O2
     O1 --> O3
     O1 --> O4
@@ -292,7 +401,7 @@ graph LR
 
     subgraph Document["Document Processing"]
         pdf2image["pdf2image"]
-        Tesseract["Tesseract OCR"]
+        Surya["Surya OCR"]
         WeasyPrint["WeasyPrint"]
     end
 
@@ -302,39 +411,50 @@ graph LR
         GLiNER["GLiNER<br/>(zero-shot NER)"]
     end
 
-    subgraph AI["AI Analysis"]
+    subgraph AI["AI Analysis & Validation"]
         PydanticAI["Pydantic AI"]
         DeepSeek["DeepSeek Chat"]
+    end
+
+    subgraph Storage["Storage"]
+        S3["S3 + LocalStack"]
+        boto3["boto3"]
     end
 
     subgraph Frontend["Frontend"]
         React["React 19"]
         Vite["Vite 7"]
+        Express["Express.js"]
     end
 
     Dagster --> pdf2image
-    Dagster --> Tesseract
+    Dagster --> Surya
     Dagster --> Presidio
     Presidio --> spaCy
     Presidio --> GLiNER
     Dagster --> PydanticAI
     PydanticAI --> DeepSeek
     Dagster --> WeasyPrint
+    Dagster --> S3
+    S3 --> boto3
     React --> Vite
+    Express --> S3
 ```
 
 | Layer | Technology | Purpose |
 |---|---|---|
 | Orchestration | Dagster | Asset-based pipeline, sensors, jobs |
 | PDF → Images | pdf2image + Poppler | Rasterize PDF pages at 300 DPI |
-| OCR | Tesseract | Extract text from page images |
+| OCR | Surya | Layout-aware deep-learning text extraction |
 | PII Detection | Presidio + spaCy + GLiNER | Hybrid NER for comprehensive PII coverage |
 | PII Anonymization | Custom instance-aware anonymizer | Replace entities with numbered placeholders (`<PERSON_1>`) + reversible mapping |
 | AI Extraction | Pydantic AI + DeepSeek | Structured data extraction from text |
 | AI Analysis | Pydantic AI + DeepSeek | Financial analysis and recommendations |
+| Validation | Pydantic validators + Pydantic AI + DeepSeek | 20+ deterministic checks + AI coherence scoring |
 | PDF Reports | WeasyPrint | HTML templates → professional PDFs |
 | Test Data | PyPDFForm + ReportLab | Fill official IRS K-1 blanks with sample data |
-| Frontend | React + Vite | Interactive dashboard for results |
+| Storage | S3 + LocalStack + boto3 | Bucket-based I/O (local dev via LocalStack, prod-ready for AWS) |
+| Frontend | React + Vite + Express.js | Interactive dashboard backed by S3 API |
 
 ## Getting Started
 
@@ -342,7 +462,7 @@ graph LR
 
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (`apt install tesseract-ocr`)
+- [Docker](https://docs.docker.com/get-docker/) (for LocalStack)
 - [Poppler](https://poppler.freedesktop.org/) (`apt install poppler-utils`)
 - Node.js 18+ (for the frontend)
 
@@ -354,6 +474,12 @@ git clone https://github.com/danielpodrazka/dagster-document-intelligence.git &&
 
 # Create .env with your DeepSeek API key
 echo "DEEPSEEK_API_KEY=your-key-here" > .env
+
+# Start LocalStack (S3)
+docker run -d --name localstack -p 4566:4566 localstack/localstack
+
+# Create the S3 bucket
+aws --endpoint-url=http://localhost:4566 s3 mb s3://dagster-document-intelligence-etl
 
 # Install Python dependencies
 cd pipeline
@@ -372,12 +498,12 @@ dg dev    # opens at http://localhost:3000
 
 **Option 2 — Dropoff sensor (automatic):**
 1. In the Dagster UI, go to Sensors and enable `k1_dropoff_sensor`
-2. Drop PDF files into `pipeline/data/dropoff/`
+2. Upload PDF files to the S3 dropoff prefix (or drop into `pipeline/data/dropoff/`)
 3. The sensor picks them up within 30 seconds and processes them in parallel
 
 ### Audit Dashboard
 
-The frontend is a lightweight Node.js server + React app that reads directly from the pipeline output.
+The frontend is an Express.js server + React app that reads pipeline output directly from S3.
 
 ```bash
 cd frontend
@@ -390,7 +516,8 @@ The dashboard provides a tabbed audit view for each processed K-1:
 
 - **Summary** — extracted financial data, AI analysis, capital account movement
 - **PII & Redactions** — detection report, Presidio vs GLiNER comparison, full placeholder mapping table
-- **AI Audit** — complete prompts, responses, output schemas, and token usage for both extraction and analysis steps
+- **Validation** — deterministic check results (pass/warn/fail per rule), AI coherence scores, anomaly flags
+- **AI Audit** — complete prompts, responses, output schemas, and token usage for extraction, analysis, and validation steps
 - **OCR Text** — raw and sanitized text side by side
 - **Metadata** — processing timestamps and output file paths
 
@@ -417,6 +544,8 @@ The repo includes 10 realistic K-1 partner profiles for testing, each with disti
 | 9 | Cascadia Clean Energy Fund | LP | Renewables, foreign taxes |
 | 10 | Southern Hospitality Restaurant Group | GP | Restaurant, S-Corp |
 
+A `scanned_k1_pdf` asset is also available to generate degraded scans (rotation, blur, noise, contrast reduction, JPEG compression) from the filled IRS form for stress-testing the OCR pipeline.
+
 ### Generating test data
 
 All test PDFs are generated by filling the **official IRS Schedule K-1 (Form 1065) 2024** with fictitious data using PyPDFForm. The blank form is downloaded from irs.gov automatically on first run.
@@ -435,7 +564,7 @@ uv run python scripts/fill_irs_k1.py
 # → data/input/irs_k1_filled.pdf
 ```
 
-You can also materialize the `irs_k1_form_fill` asset in the Dagster UI to generate the single filled form.
+You can also materialize the `irs_k1_form_fill` asset in the Dagster UI to generate the single filled form, or `scanned_k1_pdf` to generate a degraded scan version.
 
 Profile data for the 10 test partners is defined in:
 
@@ -458,14 +587,18 @@ def defs():
 | Definition | File | Description |
 |---|---|---|
 | `irs_k1_form_fill` | assets.py | Download + fill IRS K-1 blank |
-| `raw_k1_pdf` | assets.py | Ingest PDF into staging |
-| `ocr_extracted_text` | assets.py | OCR via Tesseract |
+| `scanned_k1_pdf` | assets.py | Degrade filled PDF with scan artifacts |
+| `raw_k1_pdf` | assets.py | Ingest PDF into S3 staging |
+| `ocr_extracted_text` | assets.py | OCR via Surya |
 | `pii_detection_report` | assets.py | Presidio + GLiNER PII scan |
 | `sanitized_text` | assets.py | Anonymize PII |
 | `ai_structured_extraction` | assets.py | DeepSeek → K1ExtractedData |
 | `ai_financial_analysis` | assets.py | DeepSeek → FinancialAnalysis |
+| `k1_deterministic_validation` | validation.py | 20+ rule checks (arithmetic, field, capital) |
+| `k1_ai_validation` | validation.py | DeepSeek → K1AIValidationResult |
 | `final_report` | assets.py | Generate all output files |
 | `processing_overview` | overview.py | Aggregate overview JSON + PDF |
+| `S3Storage` | resources.py | S3 ConfigurableResource (boto3/LocalStack) |
 | `k1_dropoff_processing_job` | sensors.py | Job for single-doc processing |
 | `k1_dropoff_sensor` | sensors.py | File watcher for dropoff/ |
 | `k1_dropoff_failure_sensor` | sensors.py | Move PDF to failed/ on error |
@@ -502,11 +635,11 @@ Or copy the `.claude/skills/` directory into your own project.
 
 ## Making It Production-Ready
 
-This project is an educational demo with local file storage and no deployment infrastructure. Here are concrete steps to take it toward production use:
+This project is an educational demo with LocalStack S3 and no deployment infrastructure. Here are concrete steps to take it toward production use:
 
-**Storage & Infrastructure**
-- **AWS S3 integration** — swap local file I/O for S3 using Dagster's [`S3Resource`](https://docs.dagster.io/integrations/libraries/aws/s3/s3-resource) or a custom I/O manager. The pipeline already isolates runs by directory, so the migration is straightforward
-- **Containerization** — add `Dockerfile` and `docker-compose.yml` to bundle Tesseract, Poppler, WeasyPrint, and the Python environment into a reproducible image
+**Infrastructure**
+- **Real AWS S3** — the pipeline already uses S3 via the `S3Storage` resource; switch from LocalStack to real AWS by updating environment variables (`AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- **Containerization** — add `Dockerfile` and `docker-compose.yml` to bundle Poppler, WeasyPrint, and the Python environment into a reproducible image
 - **Deploy to Dagster+** — use [Dagster+](https://dagster.io/plus) for managed orchestration, or self-host with the Dagster Helm chart on Kubernetes
 
 **AI Provider**
@@ -514,7 +647,7 @@ This project is an educational demo with local file storage and no deployment in
 - **On-premise inference (optional)** — for larger operations processing high document volumes (K-1s, 1099s, brokerage statements, trust documents, etc.), on-site inference using open-weight models (Llama, Mistral, Qwen) served via vLLM or TGI can eliminate data jurisdiction concerns entirely, remove per-call API costs, and avoid rate limits during peak tax season. Requires dedicated GPU hardware (e.g., A100/H100) and ML ops capacity
 
 **Validation & Compliance**
-- **Domain-driven validation** — add checks that verify extracted K-1 data against IRS rules (e.g., Box 1 + Box 2 + Box 3 = total income, partner share percentages sum to 100% across all partners, required fields are non-null)
+- **Cross-partner validation** — extend the validation system with Phase 4 checks (partner share percentages sum to 100% across all partners, proportionality checks, duplicate detection) — requires cross-run data storage
 - **Dagster asset checks** — use [`@asset_check`](https://docs.dagster.io/concepts/assets/asset-checks) to enforce data quality gates between pipeline stages (e.g., OCR confidence thresholds, PII detection completeness, extraction field coverage)
 - **Input validation** — verify uploaded PDFs are actually K-1 forms before processing (page count, form number detection, IRS header matching)
 
