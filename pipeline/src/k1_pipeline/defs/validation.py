@@ -810,10 +810,10 @@ def run_ai_validation(
     k1_data: K1ExtractedData,
     deterministic_report: K1ValidationReport,
     sanitized_text: str,
-) -> tuple[K1AIValidationResult, list[dict]]:
+) -> tuple[K1AIValidationResult, dict]:
     """Run AI-powered validation on extracted K-1 data.
 
-    Returns (result, ai_messages) for auditability.
+    Returns (result, ai_interaction) for auditability.
     """
     from pydantic_ai import Agent
 
@@ -875,7 +875,17 @@ non-null field in value_reasonableness."""
 
     result = agent.run_sync(user_prompt)
     ai_messages = _serialize_messages(result.all_messages())
-    return result.output, ai_messages
+
+    ai_interaction = {
+        "model": "deepseek:deepseek-chat",
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "output_schema": K1AIValidationResult.model_json_schema(),
+        "raw_messages": ai_messages,
+        "usage": result.usage().model_dump() if hasattr(result.usage(), "model_dump") else str(result.usage()),
+    }
+
+    return result.output, ai_interaction
 
 
 # ---------------------------------------------------------------------------
@@ -944,16 +954,13 @@ def k1_ai_validation(
     det_report = K1ValidationReport(**det_data["report"])
     sanitized_text_content = sanitized_data["sanitized_text"]
 
-    ai_result, ai_messages = run_ai_validation(k1_data, det_report, sanitized_text_content)
+    ai_result, ai_interaction = run_ai_validation(k1_data, det_report, sanitized_text_content)
 
     staging_key = s3.staging_key(config.run_id, "ai_validation.json")
     s3.write_json(staging_key, {
         "ai_validation": ai_result.model_dump(),
         "validated_at": datetime.now(timezone.utc).isoformat(),
-        "ai_interaction": {
-            "model": "deepseek:deepseek-chat",
-            "raw_messages": ai_messages,
-        },
+        "ai_interaction": ai_interaction,
     })
 
     anomaly_lines = [

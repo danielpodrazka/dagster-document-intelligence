@@ -319,10 +319,55 @@ function AnalysisCard({ analysis }) {
   )
 }
 
+function PipelineSteps({ metadata }) {
+  const steps = [
+    { key: 'ingestion_timestamp', label: 'PDF Ingestion', desc: 'Read raw PDF from S3' },
+    { key: 'ocr_timestamp', label: 'OCR Extraction', desc: 'Surya layout-aware OCR' },
+    { key: 'pii_scan_timestamp', label: 'PII Detection', desc: 'Presidio + GLiNER scan' },
+    { key: 'sanitization_timestamp', label: 'Text Sanitization', desc: 'Replace PII with placeholders' },
+    { key: 'extraction_timestamp', label: 'AI Extraction', desc: 'Structured K-1 field extraction' },
+    { key: 'analysis_timestamp', label: 'AI Analysis', desc: 'Financial analysis & recommendations' },
+    { key: 'deterministic_validation_timestamp', label: 'Rule Validation', desc: 'Deterministic checks (30+ rules)' },
+    { key: 'ai_validation_timestamp', label: 'AI Validation', desc: 'Quality & coherence assessment' },
+    { key: 'report_generated_at', label: 'Report Generation', desc: 'Final deliverables (JSON, CSV, PDF)' },
+  ]
+
+  return (
+    <div className="card full-width" style={{ marginBottom: '2rem' }}>
+      <div className="card-header">
+        <h2>Pipeline Steps</h2>
+        <span className="tag financial">{steps.filter(s => metadata[s.key]).length} / {steps.length} completed</span>
+      </div>
+      <div className="card-body">
+        <div className="pipeline-steps">
+          {steps.map((step, i) => {
+            const ts = metadata[step.key]
+            const completed = !!ts
+            return (
+              <div key={step.key} className={`pipeline-step ${completed ? 'completed' : 'pending'}`}>
+                <div className="pipeline-step-indicator">
+                  <div className="pipeline-step-dot">{completed ? '\u2713' : (i + 1)}</div>
+                  {i < steps.length - 1 && <div className="pipeline-step-line" />}
+                </div>
+                <div className="pipeline-step-content">
+                  <div className="pipeline-step-label">{step.label}</div>
+                  <div className="pipeline-step-desc">{step.desc}</div>
+                  {ts && <div className="pipeline-step-time">{new Date(ts).toLocaleString()}</div>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SummaryTab({ data, mapping }) {
   const pr = data.pipeline_results || {}
   return (
     <>
+      <PipelineSteps metadata={pr.processing_metadata || {}} />
       <StatsGrid data={pr} mapping={mapping} />
       <div className="main-grid">
         <FinancialDataCard k1={pr.k1_data} mapping={mapping} />
@@ -687,7 +732,7 @@ function PIITab({ data }) {
 //  Tab 3: AI Audit
 // ================================================================
 
-function AIInteractionSection({ title, interaction }) {
+function AIInteractionSection({ title, description, interaction }) {
   if (!interaction) return null
 
   const [expandedPrompt, setExpandedPrompt] = useState(null)
@@ -702,12 +747,20 @@ function AIInteractionSection({ title, interaction }) {
     try { parsedResponse = JSON.parse(toolCallArgs) } catch { parsedResponse = toolCallArgs }
   }
 
+  // Format usage stats if available
+  const usageText = interaction.usage
+    ? (typeof interaction.usage === 'object'
+      ? `${interaction.usage.request_tokens || interaction.usage.requests || '?'} req / ${interaction.usage.response_tokens || '?'} resp tokens`
+      : String(interaction.usage))
+    : null
+
   return (
     <div className="ai-section">
       <h3 className="ai-section-title">{title}</h3>
+      {description && <p className="ai-section-desc">{description}</p>}
       <div className="ai-meta-row">
         <span className="ai-meta-badge">{interaction.model || 'unknown'}</span>
-        {interaction.usage && <span className="ai-meta-usage">{interaction.usage}</span>}
+        {usageText && <span className="ai-meta-usage">{usageText}</span>}
       </div>
 
       <div className="ai-prompt-group">
@@ -757,15 +810,29 @@ function AIAuditTab({ data }) {
   const ai = data.ai_interactions
   if (!ai) return <div className="card full-width"><div className="card-body"><p style={{ color: 'var(--text-muted)' }}>No AI interaction data available (k1_report.json not found in output).</p></div></div>
 
+  const steps = [
+    { key: 'extraction', title: 'Step 1: Structured Data Extraction', desc: 'Extract K-1 financial fields from sanitized OCR text' },
+    { key: 'analysis', title: 'Step 2: Financial Analysis', desc: 'Analyze extracted data for income totals, observations, and tax recommendations' },
+    { key: 'validation', title: 'Step 3: AI Quality Validation', desc: 'Assess data coherence, OCR confidence, and flag anomalies' },
+  ]
+
+  const availableSteps = steps.filter(s => ai[s.key])
+
   return (
     <div className="card full-width">
       <div className="card-header">
         <h2>AI Interaction Audit Trail</h2>
-        <span className="tag ai">Full prompts &amp; responses</span>
+        <span className="tag ai">{availableSteps.length} AI steps</span>
       </div>
       <div className="card-body">
-        <AIInteractionSection title="Step 1: Structured Data Extraction" interaction={ai.extraction} />
-        <AIInteractionSection title="Step 2: Financial Analysis" interaction={ai.analysis} />
+        {steps.map(step => (
+          ai[step.key] ? (
+            <AIInteractionSection key={step.key} title={step.title} description={step.desc} interaction={ai[step.key]} />
+          ) : null
+        ))}
+        {availableSteps.length === 0 && (
+          <p style={{ color: 'var(--text-muted)' }}>No AI interaction data recorded.</p>
+        )}
       </div>
     </div>
   )

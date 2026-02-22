@@ -986,6 +986,8 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     # Load all staging data
     structured_data = s3.read_json(s3.staging_key(config.run_id, "structured_k1.json"))
     analysis_data = s3.read_json(s3.staging_key(config.run_id, "financial_analysis.json"))
+    ocr_data = s3.read_json(s3.staging_key(config.run_id, "ocr_text.json"))
+    sanitized_data = s3.read_json(s3.staging_key(config.run_id, "sanitized_text.json"))
     pii_report = s3.read_json(s3.staging_key(config.run_id, "pii_report.json"))
     pii_comparison = s3.read_json(s3.staging_key(config.run_id, "pii_comparison.json"))
     det_validation_data = s3.read_json(s3.staging_key(config.run_id, "deterministic_validation.json"))
@@ -1036,9 +1038,14 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
             "validation": ai_validation_data.get("ai_interaction"),
         },
         "processing_metadata": {
+            "ingestion_timestamp": raw_data.get("ingested_at"),
+            "ocr_timestamp": ocr_data.get("extracted_at"),
+            "pii_scan_timestamp": pii_report.get("analyzed_at"),
+            "sanitization_timestamp": sanitized_data.get("sanitized_at"),
             "extraction_timestamp": structured_data.get("extracted_at"),
             "analysis_timestamp": analysis_data.get("analyzed_at"),
-            "pii_scan_timestamp": pii_report.get("analyzed_at"),
+            "deterministic_validation_timestamp": det_validation_data.get("validated_at"),
+            "ai_validation_timestamp": ai_validation_data.get("validated_at"),
         },
     }
 
@@ -1117,10 +1124,12 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
             },
         },
         "processing_metadata": {
-            "ingestion_timestamp": structured_data.get("extracted_at"),
+            "ingestion_timestamp": raw_data.get("ingested_at"),
+            "ocr_timestamp": ocr_data.get("extracted_at"),
+            "pii_scan_timestamp": pii_report.get("analyzed_at"),
+            "sanitization_timestamp": sanitized_data.get("sanitized_at"),
             "extraction_timestamp": structured_data.get("extracted_at"),
             "analysis_timestamp": analysis_data.get("analyzed_at"),
-            "pii_scan_timestamp": pii_report.get("analyzed_at"),
             "deterministic_validation_timestamp": det_validation_data.get("validated_at"),
             "ai_validation_timestamp": ai_validation_data.get("validated_at"),
             "report_generated_at": now_iso,
