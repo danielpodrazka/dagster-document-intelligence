@@ -13,6 +13,7 @@ import base64
 import csv
 import io
 import json
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -484,7 +485,6 @@ def _run_gliner_only(full_text: str) -> list:
             "address": "ADDRESS",
             "date of birth": "DATE_OF_BIRTH",
             "driver license": "US_DRIVER_LICENSE",
-            "tax identification number": "EIN",
         },
         threshold=0.3,
     )
@@ -513,7 +513,6 @@ def _run_presidio_plus_gliner(full_text: str, entities_to_detect: list[str]) -> 
             "address": "ADDRESS",
             "date of birth": "DATE_OF_BIRTH",
             "driver license": "US_DRIVER_LICENSE",
-            "tax identification number": "EIN",
         },
         threshold=0.3,
     )
@@ -545,12 +544,18 @@ K1_ALLOWLIST = {
 }
 
 
+_SSN_RE = re.compile(r"^\d{3}-\d{2}-\d{4}$")
+
+
 def _filter_false_positives(results, full_text: str) -> list:
-    """Remove PII detections that match common K-1 form terminology."""
+    """Remove PII detections that match common K-1 form terminology or fail format checks."""
     filtered = []
     for r in results:
         text_snippet = full_text[r.start:r.end].strip()
         if text_snippet.lower() in K1_ALLOWLIST:
+            continue
+        # SSN must match XXX-XX-XXXX format (GLiNER can match arbitrary number groups)
+        if r.entity_type == "US_SSN" and not _SSN_RE.match(text_snippet):
             continue
         filtered.append(r)
     return filtered
@@ -1167,6 +1172,14 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
         s3.upload_from_file(tmp_pdf.name, pdf_key, content_type="application/pdf")
 
     pipeline_results["output_files"]["pdf_report"] = pdf_key
+
+    # ---- 5. Embed cross-partner results (if available) ----
+    try:
+        cross_partner = s3.read_json("output/cross_partner_results.json")
+        pipeline_results["cross_partner_validation"] = cross_partner
+    except Exception:
+        pipeline_results["cross_partner_validation"] = None
+
     s3.write_json(pipeline_results_key, pipeline_results)
 
     return dg.MaterializeResult(
