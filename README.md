@@ -28,7 +28,7 @@ graph TB
         V1["k1_deterministic_validation<br/><i>20+ rule checks</i>"]
         V2["k1_ai_validation<br/><i>DeepSeek → coherence scoring</i>"]
         I["final_report<br/><i>JSON + CSV + PDF</i>"]
-        DB["k1_duckdb_ingest<br/><i>Persist to DuckDB</i>"]
+        DB["k1_parquet_upsert<br/><i>Upsert to S3 Parquet</i>"]
     end
 
     subgraph CrossPartner["Cross-Partner Validation"]
@@ -104,7 +104,7 @@ graph LR
     end
 
     subgraph CrossPartner["Cross-Partner"]
-        F1["k1_duckdb_ingest<br/>Persist extracted data<br/>to DuckDB"]
+        F1["k1_parquet_upsert<br/>Upsert to S3 Parquet"]
         F2["cross_partner_validation<br/>11 rules across<br/>partners & years"]
     end
 
@@ -181,26 +181,27 @@ graph TD
 
 ## Cross-Partner Validation
 
-After each K-1 is processed, the `k1_duckdb_ingest` asset persists the extracted data into a local DuckDB database. A sensor then triggers `cross_partner_validation`, which runs 11 rules across all accumulated records — catching inconsistencies that are invisible when looking at a single K-1 in isolation.
+After each K-1 is processed, the `k1_parquet_upsert` asset upserts the extracted data into a Parquet file on S3 (`output/k1_records.parquet`). A sensor then triggers `cross_partner_validation`, which loads the Parquet into in-memory DuckDB and runs 11 rules across all accumulated records — catching inconsistencies that are invisible when looking at a single K-1 in isolation.
 
 ```mermaid
 graph TD
     subgraph PerRun["Per-Run Pipeline"]
-        FR["final_report"] --> DBI["k1_duckdb_ingest<br/><i>Persist to DuckDB</i>"]
+        FR["final_report"] --> PU["k1_parquet_upsert<br/><i>Upsert to S3 Parquet</i>"]
     end
 
-    DBI -->|"run_status_sensor"| CPV["cross_partner_validation<br/><i>11 rules</i>"]
+    PU -->|"run_status_sensor"| CPV["cross_partner_validation<br/><i>11 rules</i>"]
 
-    subgraph DuckDB["DuckDB Store"]
-        T1["k1_records<br/>(EIN, TIN, year, amounts)"]
-        T2["cross_partner_validations<br/>(rule results)"]
-        T3["processed_files<br/>(SHA-256 dedup)"]
+    subgraph S3Parquet["S3 Parquet"]
+        T1["k1_records.parquet<br/>(EIN, TIN, year, amounts, SHA-256)"]
     end
 
-    DBI --> T1
-    DBI --> T3
-    CPV --> T2
+    subgraph S3JSON["S3 JSON"]
+        T2["cross_partner_results.json<br/>(validation results)"]
+    end
+
+    PU --> T1
     T1 --> CPV
+    CPV --> T2
 
     subgraph Rules["Validation Rules"]
         direction LR
@@ -228,7 +229,7 @@ graph TD
 | `CROSS_D1_DISTRIBUTION_REASONABLENESS` | D | warning | Total distributions should not vastly exceed total income |
 | `CROSS_D4_SE_CONSISTENCY` | D | warning | Self-employment earnings must be consistent with partner type |
 
-DuckDB serializes writes via a file lock to handle Dagster's multi-process run launcher safely. The OCR step also uses a separate file lock to serialize GPU access across parallel runs.
+The `k1_parquet_upsert` asset uses a file lock to serialize its read-modify-write of the Parquet file across Dagster's multi-process run launcher. Reads in `cross_partner_validation` don't need locking since Parquet files in S3 are immutable snapshots. The OCR step also uses a separate file lock to serialize GPU access across parallel runs.
 
 ## PII Detection Strategy
 
@@ -345,9 +346,8 @@ dagster-document-intelligence/
 │   │   └── defs/
 │   │       ├── assets.py                 # 8 pipeline assets + K1RunConfig + Pydantic models
 │   │       ├── validation.py             # 2-track validation (deterministic + AI) + 2 assets
-│   │       ├── cross_partner.py          # Cross-partner validation assets + sensor + job
+│   │       ├── cross_partner.py          # Cross-partner validation assets + sensor + job (S3 Parquet + in-memory DuckDB)
 │   │       ├── cross_partner_rules.py    # 11 cross-partner validation rule functions
-│   │       ├── duckdb_store.py           # DuckDB ConfigurableResource for cross-partner data
 │   │       ├── sensors.py                # Dropoff sensor + failure sensor
 │   │       ├── overview.py               # Aggregated overview asset + success sensor
 │   │       ├── resources.py              # S3Storage ConfigurableResource (boto3/LocalStack)
@@ -490,7 +490,7 @@ graph LR
     subgraph Storage["Storage"]
         S3["S3 + LocalStack"]
         boto3["boto3"]
-        DuckDB["DuckDB"]
+        DuckDB["DuckDB (in-memory)"]
     end
 
     subgraph Frontend["Frontend"]
@@ -527,7 +527,7 @@ graph LR
 | PDF Reports | WeasyPrint | HTML templates → professional PDFs |
 | Test Data | PyPDFForm + ReportLab | Fill official IRS K-1 blanks with sample data |
 | Storage | S3 + LocalStack + boto3 | Bucket-based I/O (local dev via LocalStack, prod-ready for AWS) |
-| Cross-Partner Store | DuckDB | Persistent K-1 records for cross-partner & multi-year validation |
+| Cross-Partner Store | S3 Parquet + in-memory DuckDB | K-1 records stored as Parquet on S3, queried via in-memory DuckDB |
 | Frontend | React + Vite + Express.js | Interactive dashboard backed by S3 API |
 
 ## Getting Started
@@ -692,12 +692,11 @@ def defs():
 | `k1_deterministic_validation` | validation.py | 20+ rule checks (arithmetic, field, capital) |
 | `k1_ai_validation` | validation.py | DeepSeek → K1AIValidationResult |
 | `final_report` | assets.py | Generate all output files |
-| `k1_duckdb_ingest` | cross_partner.py | Persist extracted K-1 data to DuckDB |
+| `k1_parquet_upsert` | cross_partner.py | Upsert extracted K-1 data to S3 Parquet |
 | `cross_partner_validation` | cross_partner.py | Run 11 cross-partner validation rules |
 | `processing_overview` | overview.py | Aggregate overview JSON + PDF |
 | `S3Storage` | resources.py | S3 ConfigurableResource (boto3/LocalStack) |
-| `DuckDBStore` | duckdb_store.py | DuckDB ConfigurableResource for cross-partner data |
-| `k1_dropoff_processing_job` | sensors.py | Job for single-doc processing (includes DuckDB ingest) |
+| `k1_dropoff_processing_job` | sensors.py | Job for single-doc processing (includes Parquet upsert) |
 | `cross_partner_validation_job` | cross_partner.py | Job wrapping cross-partner validation |
 | `k1_dropoff_sensor` | sensors.py | File watcher for dropoff/ |
 | `k1_dropoff_failure_sensor` | sensors.py | Move PDF to failed/ on error |
@@ -752,7 +751,7 @@ This project is an educational demo with LocalStack S3 and no deployment infrast
 
 **Reports & Output**
 - **Branded PDF reports** — replace the generic HTML templates in `pdf_templates.py` with firm-branded designs (logo, color scheme, footer disclaimers, custom typography)
-- **DuckDB on S3** — the local DuckDB store currently lives on disk; for multi-node deployments, back it with [DuckDB on S3](https://duckdb.org/docs/extensions/httpfs/s3api) or use [DuckLake](https://ducklake.select/) as a catalog layer for discoverability and metadata management
+- **Parquet catalog** — K-1 records are stored as a single Parquet file on S3 and queried via in-memory DuckDB; for multi-node deployments with higher volumes, consider partitioning by tax year or using [DuckLake](https://ducklake.select/) as a catalog layer for discoverability and metadata management
 
 **Operations**
 - **Testing** — add unit tests for PII detection accuracy, extraction field mapping, and PDF generation; integration tests for end-to-end pipeline runs

@@ -2,24 +2,106 @@
 Cross-partner validation assets, sensor, and job.
 
 Provides:
-  - k1_duckdb_ingest: ingests each K-1 pipeline run into DuckDB
+  - k1_parquet_upsert: ingests each K-1 pipeline run into S3 Parquet
   - cross_partner_validation: runs cross-partner checks on accumulated data
   - k1_cross_partner_on_success: sensor that triggers validation after each run
   - cross_partner_validation_job: job wrapping the validation asset
 """
 
 import base64
+import fcntl
 import hashlib
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 import dagster as dg
 
 from k1_pipeline.defs.assets import K1RunConfig
 from k1_pipeline.defs.cross_partner_rules import run_cross_partner_checks
-from k1_pipeline.defs.duckdb_store import DuckDBStore
 from k1_pipeline.defs.resources import S3Storage
 from k1_pipeline.defs.sensors import k1_dropoff_processing_job
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+PARQUET_S3_KEY = "output/k1_records.parquet"
+_PARQUET_LOCK_PATH = Path(tempfile.gettempdir()) / "k1_parquet.lock"
+
+_CREATE_TABLE_SQL = """
+    CREATE TABLE k1_records (
+        partnership_ein  VARCHAR NOT NULL,
+        partner_tin      VARCHAR NOT NULL,
+        tax_year         VARCHAR NOT NULL,
+        run_id           VARCHAR NOT NULL,
+        source_pdf_name  VARCHAR,
+        pdf_sha256       VARCHAR,
+        ingested_at      VARCHAR,
+        partnership_name VARCHAR,
+        partner_type     VARCHAR,
+        partner_share_percentage DOUBLE,
+        ordinary_business_income DOUBLE,
+        rental_real_estate_income DOUBLE,
+        guaranteed_payments      DOUBLE,
+        interest_income          DOUBLE,
+        ordinary_dividends       DOUBLE,
+        qualified_dividends      DOUBLE,
+        short_term_capital_gains  DOUBLE,
+        long_term_capital_gains   DOUBLE,
+        section_179_deduction    DOUBLE,
+        distributions            DOUBLE,
+        capital_account_beginning DOUBLE,
+        capital_account_ending    DOUBLE,
+        self_employment_earnings  DOUBLE,
+        foreign_taxes_paid       DOUBLE,
+        qbi_deduction            DOUBLE,
+        deterministic_passed        BOOLEAN,
+        deterministic_critical_count INTEGER,
+        deterministic_warning_count  INTEGER,
+        ai_coherence_score          DOUBLE,
+        ai_ocr_confidence           DOUBLE,
+        PRIMARY KEY (partnership_ein, partner_tin, tax_year)
+    )
+"""
+
+
+# ---------------------------------------------------------------------------
+# Parquet I/O helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_parquet(s3: S3Storage):
+    """Load existing parquet from S3 into an in-memory DuckDB connection.
+
+    Returns an in-memory DuckDB connection with a k1_records table.
+    Creates an empty table if no parquet exists yet.
+    """
+    import duckdb
+
+    conn = duckdb.connect()
+    try:
+        parquet_bytes = s3.read_bytes(PARQUET_S3_KEY)
+        tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+        tmp.write(parquet_bytes)
+        tmp.close()
+        conn.execute(f"CREATE TABLE k1_records AS SELECT * FROM read_parquet('{tmp.name}')")
+        os.unlink(tmp.name)
+    except Exception:
+        conn.execute(_CREATE_TABLE_SQL)
+    return conn
+
+
+def _write_parquet(conn, s3: S3Storage) -> None:
+    """Export k1_records table to parquet and upload to S3."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+    tmp.close()
+    conn.execute(f"COPY k1_records TO '{tmp.name}' (FORMAT PARQUET)")
+    s3.upload_from_file(tmp.name, PARQUET_S3_KEY, content_type="application/octet-stream")
+    os.unlink(tmp.name)
 
 
 # ---------------------------------------------------------------------------
@@ -96,17 +178,16 @@ class CrossPartnerConfig(dg.Config):
     group_name="cross_partner_validation",
     deps=["final_report"],
 )
-def k1_duckdb_ingest(
+def k1_parquet_upsert(
     context: dg.AssetExecutionContext,
     config: K1RunConfig,
     s3: S3Storage,
-    duckdb_store: DuckDBStore,
 ) -> dg.MaterializeResult:
-    """Ingest a completed K-1 pipeline run into DuckDB for cross-partner validation.
+    """Ingest a completed K-1 pipeline run into S3 Parquet for cross-partner validation.
 
     Reads structured extraction, PII mapping, validation results, and raw PDF
     metadata from S3 staging, resolves PII identifiers, and upserts the record
-    into the k1_records table.
+    into the k1_records parquet file on S3.
     """
     run_id = config.run_id
 
@@ -151,23 +232,6 @@ def k1_duckdb_ingest(
     pdf_bytes = base64.b64decode(raw_data.get("base64_data", ""))
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
-    # Check for duplicate PDF (C3)
-    existing_file = duckdb_store.check_and_register_file(
-        pdf_sha256=pdf_sha256,
-        run_id=run_id,
-        file_name=raw_data.get("file_name", ""),
-        file_size=raw_data.get("file_size_bytes", 0),
-    )
-
-    c3_message = ""
-    if existing_file:
-        c3_message = (
-            f"Duplicate PDF detected: hash {pdf_sha256[:12]}... was previously "
-            f"processed as run_id={existing_file['run_id']} "
-            f"on {existing_file.get('ingested_at', 'unknown')}"
-        )
-        context.log.warning(c3_message)
-
     # Build K-1 record
     record = {
         "partnership_ein": partnership_ein,
@@ -210,11 +274,52 @@ def k1_duckdb_ingest(
         ),
     }
 
-    duckdb_store.upsert_k1_record(record)
+    # Locked read-modify-write of the parquet file
+    fd = open(_PARQUET_LOCK_PATH, "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+        conn = _load_parquet(s3)
+
+        # Check for duplicate PDF hash (replaces processed_files table)
+        result = conn.execute(
+            "SELECT run_id, ingested_at FROM k1_records WHERE pdf_sha256 = ?",
+            [pdf_sha256],
+        )
+        existing = result.fetchone()
+
+        c3_message = ""
+        if existing:
+            c3_message = (
+                f"Duplicate PDF detected: hash {pdf_sha256[:12]}... was previously "
+                f"processed as run_id={existing[0]} on {existing[1] or 'unknown'}"
+            )
+            context.log.warning(c3_message)
+
+        # Upsert: delete existing record for this primary key, then insert
+        conn.execute(
+            "DELETE FROM k1_records WHERE partnership_ein = ? AND partner_tin = ? AND tax_year = ?",
+            [record["partnership_ein"], record["partner_tin"], record["tax_year"]],
+        )
+
+        columns = list(record.keys())
+        placeholders = ", ".join(["?"] * len(columns))
+        col_names = ", ".join(columns)
+        conn.execute(
+            f"INSERT INTO k1_records ({col_names}) VALUES ({placeholders})",
+            list(record.values()),
+        )
+
+        record_count = conn.execute("SELECT COUNT(*) FROM k1_records").fetchone()[0]
+
+        _write_parquet(conn, s3)
+        conn.close()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
 
     # Mask EIN for metadata display
     masked_ein = f"{partnership_ein[:3]}***{partnership_ein[-3:]}" if partnership_ein else "N/A"
-    record_count = duckdb_store.get_record_count()
 
     return dg.MaterializeResult(
         metadata={
@@ -236,42 +341,84 @@ def cross_partner_validation(
     context: dg.AssetExecutionContext,
     config: CrossPartnerConfig,
     s3: S3Storage,
-    duckdb_store: DuckDBStore,
 ) -> dg.MaterializeResult:
     """Run cross-partner validation checks on accumulated K-1 data.
 
-    Can be scoped to a specific partnership/year or validate all data.
-    Stores results in the cross_partner_validations table and writes
-    output/cross_partner_results.json to S3 for the frontend.
+    Reads k1_records.parquet from S3, loads into in-memory DuckDB, and
+    runs cross-partner checks. Results are written to
+    output/cross_partner_results.json on S3 for the frontend.
     """
+    conn = _load_parquet(s3)
+
     # Gather K-1 records by (ein, year)
     if config.partnership_ein and config.tax_year:
-        # Scoped to one partnership/year
-        k1s = duckdb_store.get_partnership_k1s(config.partnership_ein, config.tax_year)
+        result = conn.execute(
+            "SELECT * FROM k1_records WHERE partnership_ein = ? AND tax_year = ?",
+            [config.partnership_ein, config.tax_year],
+        )
+        columns = [desc[0] for desc in result.description]
+        k1s = [dict(zip(columns, row)) for row in result.fetchall()]
         k1s_by_partnership = {(config.partnership_ein, config.tax_year): k1s}
-        # Clear previous validations for this scope
-        duckdb_store.clear_validations_for_scope(config.partnership_ein, config.tax_year)
     else:
-        # Validate all partnerships
-        all_partnerships = duckdb_store.get_all_partnerships()
+        # All partnerships
+        groups = conn.execute(
+            "SELECT DISTINCT partnership_ein, tax_year FROM k1_records "
+            "ORDER BY partnership_ein, tax_year"
+        ).fetchall()
         k1s_by_partnership = {}
-        for p in all_partnerships:
-            ein = p["partnership_ein"]
-            year = p["tax_year"]
-            k1s_by_partnership[(ein, year)] = duckdb_store.get_partnership_k1s(ein, year)
-        duckdb_store.clear_validations_for_scope()
+        for ein, year in groups:
+            result = conn.execute(
+                "SELECT * FROM k1_records WHERE partnership_ein = ? AND tax_year = ?",
+                [ein, year],
+            )
+            columns = [desc[0] for desc in result.description]
+            k1s_by_partnership[(ein, year)] = [
+                dict(zip(columns, row)) for row in result.fetchall()
+            ]
 
     # Get consecutive year pairs
-    year_pairs = duckdb_store.get_consecutive_year_pairs()
+    pairs_result = conn.execute("""
+        SELECT
+            a.partnership_ein, a.partner_tin, a.tax_year AS year_prior,
+            b.tax_year AS year_current
+        FROM k1_records a
+        JOIN k1_records b
+            ON a.partnership_ein = b.partnership_ein
+            AND a.partner_tin = b.partner_tin
+            AND CAST(a.tax_year AS INTEGER) + 1 = CAST(b.tax_year AS INTEGER)
+        ORDER BY a.partnership_ein, a.partner_tin, a.tax_year
+    """)
+
+    year_pairs = []
+    for ein, tin, year_prior, year_current in pairs_result.fetchall():
+        prior_result = conn.execute(
+            "SELECT * FROM k1_records "
+            "WHERE partnership_ein = ? AND tax_year = ? AND partner_tin = ?",
+            [ein, year_prior, tin],
+        )
+        columns = [desc[0] for desc in prior_result.description]
+        prior_rows = prior_result.fetchall()
+
+        current_result = conn.execute(
+            "SELECT * FROM k1_records "
+            "WHERE partnership_ein = ? AND tax_year = ? AND partner_tin = ?",
+            [ein, year_current, tin],
+        )
+        current_rows = current_result.fetchall()
+
+        if prior_rows and current_rows:
+            year_pairs.append((
+                dict(zip(columns, prior_rows[0])),
+                dict(zip(columns, current_rows[0])),
+            ))
+
+    conn.close()
 
     # Run all checks
     results = run_cross_partner_checks(
         k1s_by_partnership=k1s_by_partnership,
         year_pairs=year_pairs,
     )
-
-    # Store results in DuckDB
-    duckdb_store.insert_validation_results(results)
 
     # Compute summary
     total_checks = len(results)

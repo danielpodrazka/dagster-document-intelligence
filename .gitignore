@@ -37,9 +37,5 @@ frontend/public/batch/
 .DS_Store
 Thumbs.db
 
-# DuckDB
-*.duckdb
-*.duckdb.wal
-
 # Claude
 .claude/

@@ -744,7 +744,7 @@ function ValidationTab({ data, crossPartnerData }) {
         )}
       </div>
 
-      <CrossPartnerSection crossPartner={pr.cross_partner_validation || crossPartnerData} />
+      <CrossPartnerSection crossPartner={crossPartnerData} />
     </>
   )
 }
@@ -1168,7 +1168,7 @@ function ReportDetail({ dirName, onBack }) {
       </div>
       <TabNav active={tab} onChange={setTab} />
       {tab === 'summary' && <SummaryTab data={data} mapping={mapping} />}
-      {tab === 'validation' && <ValidationTab data={data} crossPartnerData={filterCrossPartnerForReport(crossPartnerData, mapping)} />}
+      {tab === 'validation' && <ValidationTab data={data} crossPartnerData={filterCrossPartnerForReport(pr.cross_partner_validation || crossPartnerData, mapping)} />}
       {tab === 'pii' && <PIITab data={data} />}
       {tab === 'ai' && <AIAuditTab data={data} />}
       {tab === 'ocr' && <OCRTab data={data} />}

@@ -32,9 +32,8 @@ from k1_pipeline.defs.assets import (
 )
 from k1_pipeline.defs.cross_partner import (
     cross_partner_validation,
-    k1_duckdb_ingest,
+    k1_parquet_upsert,
 )
-from k1_pipeline.defs.duckdb_store import DuckDBStore
 from k1_pipeline.defs.resources import S3Storage
 from k1_pipeline.defs.validation import (
     k1_ai_validation,
@@ -60,7 +59,7 @@ PIPELINE_ASSETS = [
     k1_deterministic_validation,
     k1_ai_validation,
     final_report,
-    k1_duckdb_ingest,
+    k1_parquet_upsert,
 ]
 
 ASSET_NAMES = [
@@ -73,7 +72,7 @@ ASSET_NAMES = [
     "k1_deterministic_validation",
     "k1_ai_validation",
     "final_report",
-    "k1_duckdb_ingest",
+    "k1_parquet_upsert",
 ]
 
 
@@ -103,10 +102,9 @@ def process_one_pdf(pdf_path: Path, idx: int) -> tuple[str, bool]:
     stem = pdf_path.stem
     run_id = f"{stem}_{int(time.time())}_{idx}"
 
-    # Each worker gets its own resources (separate S3 client & DuckDB connection)
+    # Each worker gets its own S3 client
     resources = {
         "s3": S3Storage(),
-        "duckdb_store": DuckDBStore(),
     }
     s3 = resources["s3"]
 
@@ -145,7 +143,6 @@ def run_cross_partner_validation_step() -> bool:
 
     resources = {
         "s3": S3Storage(),
-        "duckdb_store": DuckDBStore(),
     }
 
     try:
@@ -173,30 +170,49 @@ def run_cross_partner_validation_step() -> bool:
         return False
 
 
-def print_duckdb_summary():
-    """Print a summary of what's in DuckDB."""
-    store = DuckDBStore()
+def print_parquet_summary():
+    """Print a summary of what's in the S3 parquet file."""
+    import duckdb
+    import os
+    import tempfile
 
-    records = store.get_all_k1_records()
+    from k1_pipeline.defs.cross_partner import PARQUET_S3_KEY
+
+    s3 = S3Storage()
+
     print(f"\n{'='*70}")
-    print(f"DuckDB Summary: {len(records)} K-1 records")
+
+    try:
+        parquet_bytes = s3.read_bytes(PARQUET_S3_KEY)
+    except Exception:
+        print("No k1_records.parquet found in S3.")
+        print(f"{'='*70}")
+        return
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+    tmp.write(parquet_bytes)
+    tmp.close()
+
+    conn = duckdb.connect()
+    conn.execute(f"CREATE TABLE k1_records AS SELECT * FROM read_parquet('{tmp.name}')")
+    os.unlink(tmp.name)
+
+    record_count = conn.execute("SELECT COUNT(*) FROM k1_records").fetchone()[0]
+    print(f"Parquet Summary: {record_count} K-1 records")
     print(f"{'='*70}")
 
-    partnerships = store.get_all_partnerships()
-    for p in partnerships:
-        print(f"  {p['partnership_ein']} | {p['tax_year']} | "
-              f"{p['partner_count']} partners | {p.get('partnership_name', 'N/A')}")
+    partnerships = conn.execute("""
+        SELECT partnership_ein, tax_year, COUNT(*) as partner_count,
+               MAX(partnership_name) as partnership_name
+        FROM k1_records
+        GROUP BY partnership_ein, tax_year
+        ORDER BY partnership_ein, tax_year
+    """).fetchall()
 
-    validations = store.get_all_validations()
-    print(f"\nCross-partner validations: {len(validations)}")
-    passed = sum(1 for v in validations if v["passed"])
-    failed = len(validations) - passed
-    print(f"  Passed: {passed}")
-    print(f"  Failed: {failed}")
+    for ein, year, count, name in partnerships:
+        print(f"  {ein} | {year} | {count} partners | {name or 'N/A'}")
 
-    for v in validations:
-        if not v["passed"]:
-            print(f"  FAIL [{v['severity'].upper()}] {v['rule_id']}: {v['message']}")
+    conn.close()
 
 
 def main():
@@ -208,13 +224,6 @@ def main():
     print(f"Found {len(pdfs)} PDFs to process (max {MAX_WORKERS} parallel):\n")
     for i, p in enumerate(pdfs, 1):
         print(f"  [{i:2d}] {p.name}")
-
-    # Remove old DuckDB file to start fresh
-    db_path = Path("data/k1_validation.duckdb")
-    for f in [db_path, db_path.with_suffix(".duckdb.wal")]:
-        if f.exists():
-            f.unlink()
-            print(f"\n  Removed old {f}")
 
     print(f"\nStarting parallel processing...")
     start_time = time.time()
@@ -245,8 +254,8 @@ def main():
     if successes > 0:
         run_cross_partner_validation_step()
 
-    # Print DuckDB summary
-    print_duckdb_summary()
+    # Print parquet summary
+    print_parquet_summary()
 
     # Check S3 for cross-partner results
     s3 = S3Storage()
