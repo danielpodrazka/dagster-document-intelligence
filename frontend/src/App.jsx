@@ -3,6 +3,53 @@ import './App.css'
 
 // --- Helpers ---
 
+const EIN_RE = /^\d{2}-\d{7}$/
+
+function filterCrossPartnerForReport(cpData, placeholderMapping) {
+  if (!cpData || !cpData.results || !placeholderMapping) return cpData
+
+  // Extract partnership EIN from placeholder mapping (first EIN value)
+  let partnershipEin = null
+  const entries = Object.entries(placeholderMapping)
+    .sort(([a], [b]) => a.localeCompare(b))
+  for (const [, original] of entries) {
+    if (EIN_RE.test(original.trim())) {
+      partnershipEin = original.trim()
+      break
+    }
+  }
+
+  if (!partnershipEin) return cpData
+
+  // Filter by partnership EIN only — not tax year, because multi-year
+  // continuity checks (category B) span across years
+  const filteredResults = cpData.results.filter(r => r.partnership_ein === partnershipEin)
+  const filteredPartnerships = (cpData.partnerships_validated || []).filter(p =>
+    p.partnership_ein === partnershipEin
+  )
+
+  const passed = filteredResults.filter(r => r.passed).length
+  const failed = filteredResults.length - passed
+  const critical = filteredResults.filter(r => !r.passed && r.severity === 'critical').length
+  const warnings = filteredResults.filter(r => !r.passed && r.severity === 'warning').length
+  const advisory = filteredResults.filter(r => !r.passed && r.severity === 'advisory').length
+
+  return {
+    ...cpData,
+    summary: {
+      total_checks: filteredResults.length,
+      passed,
+      failed,
+      critical,
+      warnings,
+      advisory,
+    },
+    results: filteredResults,
+    partnerships_validated: filteredPartnerships,
+    year_pairs_checked: filteredPartnerships.length > 1 ? cpData.year_pairs_checked : 0,
+  }
+}
+
 const formatCurrency = (value) => {
   if (value == null) return '$0'
   const num = typeof value === 'string' ? parseFloat(value) : value
@@ -96,6 +143,26 @@ function ReportList({ onSelect }) {
       </div>
     </div>
   )
+}
+
+// ================================================================
+//  Cross-Partner Dashboard (landing page)
+// ================================================================
+
+function CrossPartnerDashboard() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/cross-partner')
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  if (loading || !data || !data.summary) return null
+
+  return <CrossPartnerSection crossPartner={data} />
 }
 
 // ================================================================
@@ -381,7 +448,128 @@ function SummaryTab({ data, mapping }) {
 //  Tab: Validation
 // ================================================================
 
-function ValidationTab({ data }) {
+function CrossPartnerSection({ crossPartner }) {
+  if (!crossPartner || !crossPartner.summary) return null
+
+  const summary = crossPartner.summary
+  const results = crossPartner.results || []
+  const partnerships = crossPartner.partnerships_validated || []
+  const failed = results.filter(r => !r.passed)
+
+  const [cpFilter, setCpFilter] = useState('all')
+  const filteredFailed = cpFilter === 'all' ? failed : failed.filter(r => r.severity === cpFilter)
+
+  const hasCritical = summary.critical > 0
+  const hasWarnings = summary.warnings > 0
+  const borderColor = hasCritical ? 'var(--negative)' : hasWarnings ? '#856404' : 'var(--positive)'
+  const statusLabel = hasCritical ? 'Cross-Partner Issues Found' : hasWarnings ? 'Cross-Partner Warnings' : 'Cross-Partner Checks Passed'
+
+  return (
+    <>
+      <div className="card full-width" style={{ borderLeft: `4px solid ${borderColor}`, marginTop: '1.5rem' }}>
+        <div className="card-body" style={{ padding: '1rem 1.25rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: '1rem', fontWeight: 700, color: borderColor }}>
+              {statusLabel}
+            </div>
+            <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.85rem' }}>
+              <span><strong>{summary.total_checks}</strong> checks</span>
+              <span style={{ color: 'var(--negative)' }}><strong>{summary.critical}</strong> critical</span>
+              <span style={{ color: '#856404' }}><strong>{summary.warnings}</strong> warnings</span>
+              <span style={{ color: 'var(--text-muted)' }}><strong>{summary.advisory}</strong> advisory</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {partnerships.length > 0 && (
+        <div className="card full-width">
+          <div className="card-header">
+            <h2>Partnerships Validated</h2>
+            <span className="tag financial">{partnerships.length} partnerships</span>
+          </div>
+          <div className="card-body">
+            <table className="financial-table">
+              <thead>
+                <tr>
+                  <th>Partnership</th>
+                  <th>Year</th>
+                  <th style={{ textAlign: 'center' }}>Partners</th>
+                </tr>
+              </thead>
+              <tbody>
+                {partnerships.map((p, i) => (
+                  <tr key={i}>
+                    <td>{p.partnership_name || p.partnership_ein}</td>
+                    <td>{p.tax_year}</td>
+                    <td style={{ textAlign: 'center' }}>{p.partner_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {crossPartner.year_pairs_checked > 0 && (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                {crossPartner.year_pairs_checked} consecutive year pair(s) checked for continuity
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {failed.length > 0 && (
+        <div className="card full-width">
+          <div className="card-header">
+            <h2>Cross-Partner Issues</h2>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {['all', 'critical', 'warning', 'advisory'].map(s => (
+                <button
+                  key={s}
+                  className={`tab-btn ${cpFilter === s ? 'active' : ''}`}
+                  onClick={() => setCpFilter(s)}
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                >
+                  {s === 'all' ? `All (${failed.length})` : `${s} (${failed.filter(r => r.severity === s).length})`}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="card-body">
+            {filteredFailed.length === 0 ? (
+              <p style={{ color: 'var(--text-muted)' }}>No {cpFilter} issues found.</p>
+            ) : (
+              <table className="financial-table">
+                <thead>
+                  <tr>
+                    <th>Rule</th>
+                    <th>Category</th>
+                    <th>Severity</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredFailed.map((r, i) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{r.rule_id}</td>
+                      <td>{r.category}</td>
+                      <td>
+                        <span className={`tag ${r.severity === 'critical' ? 'compliance' : r.severity === 'warning' ? 'financial' : ''}`}>
+                          {r.severity}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '0.8rem' }}>{r.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function ValidationTab({ data, crossPartnerData }) {
   const pr = data.pipeline_results || {}
   const validation = pr.validation
 
@@ -555,6 +743,8 @@ function ValidationTab({ data }) {
           </div>
         )}
       </div>
+
+      <CrossPartnerSection crossPartner={pr.cross_partner_validation || crossPartnerData} />
     </>
   )
 }
@@ -947,14 +1137,19 @@ function MetadataTab({ data }) {
 
 function ReportDetail({ dirName, onBack }) {
   const [data, setData] = useState(null)
+  const [crossPartnerData, setCrossPartnerData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('summary')
 
   useEffect(() => {
-    fetch(`/api/reports/${encodeURIComponent(dirName)}`)
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
+    Promise.all([
+      fetch(`/api/reports/${encodeURIComponent(dirName)}`).then(r => r.json()),
+      fetch('/api/cross-partner').then(r => r.json()).catch(() => null),
+    ]).then(([reportData, cpData]) => {
+      setData(reportData)
+      setCrossPartnerData(cpData)
+      setLoading(false)
+    }).catch(() => setLoading(false))
   }, [dirName])
 
   if (loading) return <div className="loading"><div className="loading-spinner" /><p>Loading report...</p></div>
@@ -973,7 +1168,7 @@ function ReportDetail({ dirName, onBack }) {
       </div>
       <TabNav active={tab} onChange={setTab} />
       {tab === 'summary' && <SummaryTab data={data} mapping={mapping} />}
-      {tab === 'validation' && <ValidationTab data={data} />}
+      {tab === 'validation' && <ValidationTab data={data} crossPartnerData={filterCrossPartnerForReport(crossPartnerData, mapping)} />}
       {tab === 'pii' && <PIITab data={data} />}
       {tab === 'ai' && <AIAuditTab data={data} />}
       {tab === 'ocr' && <OCRTab data={data} />}
@@ -1003,7 +1198,10 @@ function App() {
 
       {selectedReport
         ? <ReportDetail dirName={selectedReport} onBack={() => setSelectedReport(null)} />
-        : <ReportList onSelect={setSelectedReport} />
+        : <>
+            <CrossPartnerDashboard />
+            <ReportList onSelect={setSelectedReport} />
+          </>
       }
     </div>
   )

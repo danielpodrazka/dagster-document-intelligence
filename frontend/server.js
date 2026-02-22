@@ -140,12 +140,26 @@ app.get('/api/reports/:dirName', async (req, res) => {
   })
 })
 
+// Get cross-partner validation results
+app.get('/api/cross-partner', async (_req, res) => {
+  try {
+    const data = await readS3Json('output/cross_partner_results.json')
+    if (!data) {
+      return res.json({ summary: null, results: [], partnerships_validated: [] })
+    }
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // --- Static files (production) ---
 
 const distPath = join(__dirname, 'dist')
 if (existsSync(distPath)) {
   app.use(express.static(distPath))
-  app.get('/{*path}', (_req, res) => {
+  app.get('/{*path}', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next()
     res.sendFile(join(distPath, 'index.html'))
   })
 }
