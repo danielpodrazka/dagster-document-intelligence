@@ -11,6 +11,7 @@ and reporting on K-1 partnership tax documents. The pipeline demonstrates:
 
 import base64
 import csv
+import fcntl
 import io
 import json
 import re
@@ -385,6 +386,27 @@ def raw_k1_pdf(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
 # Asset 2: ocr_extracted_text  (group=processing)
 # ===========================================================================
 
+# Surya OCR loads large models onto the GPU. A file lock serializes OCR across
+# processes, preventing CUDA out-of-memory errors when multiple pipeline runs
+# execute in parallel via Dagster's DefaultRunLauncher (separate subprocesses).
+_OCR_LOCK_PATH = Path(tempfile.gettempdir()) / "k1_ocr.lock"
+
+
+class _FileLock:
+    """Simple cross-process file lock using fcntl."""
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def __enter__(self):
+        self._fd = open(self._path, "w")
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *args):
+        fcntl.flock(self._fd, fcntl.LOCK_UN)
+        self._fd.close()
+
 
 @dg.asset(group_name="processing", deps=["raw_k1_pdf"])
 def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
@@ -394,22 +416,23 @@ def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResu
     extract layout-aware text. The extracted text (per-page and combined) is
     saved to staging.
     """
-    from pdf2image import convert_from_path
-    from surya.detection import DetectionPredictor
-    from surya.foundation import FoundationPredictor
-    from surya.recognition import RecognitionPredictor
-
     pdf_key = _run_pdf_key(s3, config.run_id)
     pdf_tmp = s3.download_to_tempfile(pdf_key, suffix=".pdf")
 
-    # Convert PDF pages to PIL images
-    images = convert_from_path(pdf_tmp, dpi=300)
+    with _FileLock(_OCR_LOCK_PATH):
+        from pdf2image import convert_from_path
+        from surya.detection import DetectionPredictor
+        from surya.foundation import FoundationPredictor
+        from surya.recognition import RecognitionPredictor
 
-    # Surya v0.17: RecognitionPredictor wraps a FoundationPredictor
-    foundation = FoundationPredictor()
-    det_predictor = DetectionPredictor()
-    rec_predictor = RecognitionPredictor(foundation)
-    predictions = rec_predictor(images, det_predictor=det_predictor)
+        # Convert PDF pages to PIL images
+        images = convert_from_path(pdf_tmp, dpi=300)
+
+        # Surya v0.17: RecognitionPredictor wraps a FoundationPredictor
+        foundation = FoundationPredictor()
+        det_predictor = DetectionPredictor()
+        rec_predictor = RecognitionPredictor(foundation)
+        predictions = rec_predictor(images, det_predictor=det_predictor)
 
     pages_text: list[dict] = []
     full_text_parts: list[str] = []

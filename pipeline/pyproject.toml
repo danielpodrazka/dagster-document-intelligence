@@ -20,6 +20,7 @@ dependencies = [
     "gliner",
     "weasyprint",
     "boto3",
+    "duckdb>=1.2.0",
 ]
 
 [dependency-groups]

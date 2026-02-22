@@ -28,6 +28,11 @@ graph TB
         V1["k1_deterministic_validation<br/><i>20+ rule checks</i>"]
         V2["k1_ai_validation<br/><i>DeepSeek → coherence scoring</i>"]
         I["final_report<br/><i>JSON + CSV + PDF</i>"]
+        DB["k1_duckdb_ingest<br/><i>Persist to DuckDB</i>"]
+    end
+
+    subgraph CrossPartner["Cross-Partner Validation"]
+        CP["cross_partner_validation<br/><i>11 rules across partners & years</i>"]
     end
 
     subgraph Output["Output"]
@@ -37,7 +42,7 @@ graph TB
     end
 
     subgraph Frontend["React Dashboard"]
-        M["K-1 Data Viewer<br/>PII Comparison<br/>Financial Analysis<br/>Validation Results"]
+        M["K-1 Data Viewer<br/>PII Comparison<br/>Financial Analysis<br/>Validation Results<br/>Cross-Partner Dashboard"]
     end
 
     A --> C
@@ -58,6 +63,8 @@ graph TB
     I --> J
     I --> K
     I -->|success sensor| L
+    I --> DB
+    DB -->|sensor| CP
     J --> M
 ```
 
@@ -96,6 +103,11 @@ graph LR
         E1["final_report<br/>k1_report.json<br/>k1_summary.csv<br/>k1_report.pdf<br/>pipeline_results.json"]
     end
 
+    subgraph CrossPartner["Cross-Partner"]
+        F1["k1_duckdb_ingest<br/>Persist extracted data<br/>to DuckDB"]
+        F2["cross_partner_validation<br/>11 rules across<br/>partners & years"]
+    end
+
     A1 -.-> A1b
     A1 -.-> A2
     A2 --> B1
@@ -111,6 +123,8 @@ graph LR
     D2 --> E1
     V1 --> E1
     V2 --> E1
+    E1 --> F1
+    F1 --> F2
 ```
 
 ## Two-Track Validation System
@@ -164,6 +178,57 @@ graph TD
 - `anomaly_flags` — per-field anomalies with confidence scores
 - `value_reasonableness` — per-field 0-1 scores for every non-null field
 - `recommended_review_fields` — fields warranting manual inspection
+
+## Cross-Partner Validation
+
+After each K-1 is processed, the `k1_duckdb_ingest` asset persists the extracted data into a local DuckDB database. A sensor then triggers `cross_partner_validation`, which runs 11 rules across all accumulated records — catching inconsistencies that are invisible when looking at a single K-1 in isolation.
+
+```mermaid
+graph TD
+    subgraph PerRun["Per-Run Pipeline"]
+        FR["final_report"] --> DBI["k1_duckdb_ingest<br/><i>Persist to DuckDB</i>"]
+    end
+
+    DBI -->|"run_status_sensor"| CPV["cross_partner_validation<br/><i>11 rules</i>"]
+
+    subgraph DuckDB["DuckDB Store"]
+        T1["k1_records<br/>(EIN, TIN, year, amounts)"]
+        T2["cross_partner_validations<br/>(rule results)"]
+        T3["processed_files<br/>(SHA-256 dedup)"]
+    end
+
+    DBI --> T1
+    DBI --> T3
+    CPV --> T2
+    T1 --> CPV
+
+    subgraph Rules["Validation Rules"]
+        direction LR
+        CA["Category A<br/>Cross-Partner<br/>(same year)"]
+        CB["Category B<br/>Multi-Year<br/>Continuity"]
+        CC["Category C<br/>Duplicate<br/>Detection"]
+        CD["Category D<br/>Reasonableness<br/>Checks"]
+    end
+
+    CPV --> Rules
+```
+
+| Rule ID | Category | Severity | Description |
+|---|---|---|---|
+| `CROSS_A1_PROFIT_PCT_SUM` | A | critical | Partner profit percentages must not exceed 100% |
+| `CROSS_A2_PCT_SUM_INCOMPLETE` | A | advisory | Warn if percentages sum to less than 100% (missing partners) |
+| `CROSS_A3_INCOME_PROPORTIONALITY` | A | warning | Income allocations should be proportional to profit share |
+| `CROSS_A4_CAPITAL_ACCOUNT_CONSISTENCY` | A | warning | Capital accounts should be proportional to capital percentage |
+| `CROSS_A5_PARTNERSHIP_IDENTITY` | A | warning | Partnership names must be consistent across K-1s for same EIN |
+| `CROSS_B1_CAPITAL_CONTINUITY` | B | critical | Ending capital (year N) must equal beginning capital (year N+1) |
+| `CROSS_B3_PARTNERSHIP_IDENTITY_MULTIYEAR` | B | warning | Partnership name consistent across tax years |
+| `CROSS_B4_PARTNER_TYPE_CONTINUITY` | B | warning | Partner type (GP/LP) should not change between years |
+| `CROSS_C1_EXACT_DUPLICATE` | C | critical | Detect exact duplicate K-1 records (same key + identical amounts) |
+| `CROSS_C2_AMENDED_K1` | C | warning | Detect possible amended K-1s (same key, different amounts) |
+| `CROSS_D1_DISTRIBUTION_REASONABLENESS` | D | warning | Total distributions should not vastly exceed total income |
+| `CROSS_D4_SE_CONSISTENCY` | D | warning | Self-employment earnings must be consistent with partner type |
+
+DuckDB serializes writes via a file lock to handle Dagster's multi-process run launcher safely. The OCR step also uses a separate file lock to serialize GPU access across parallel runs.
 
 ## PII Detection Strategy
 
@@ -280,17 +345,23 @@ dagster-document-intelligence/
 │   │   └── defs/
 │   │       ├── assets.py                 # 8 pipeline assets + K1RunConfig + Pydantic models
 │   │       ├── validation.py             # 2-track validation (deterministic + AI) + 2 assets
+│   │       ├── cross_partner.py          # Cross-partner validation assets + sensor + job
+│   │       ├── cross_partner_rules.py    # 11 cross-partner validation rule functions
+│   │       ├── duckdb_store.py           # DuckDB ConfigurableResource for cross-partner data
 │   │       ├── sensors.py                # Dropoff sensor + failure sensor
 │   │       ├── overview.py               # Aggregated overview asset + success sensor
 │   │       ├── resources.py              # S3Storage ConfigurableResource (boto3/LocalStack)
 │   │       └── pdf_templates.py          # WeasyPrint HTML→PDF templates
 │   ├── scripts/
 │   │   ├── generate_batch_k1s.py         # Generate all 10 test K-1 PDFs from IRS form
+│   │   ├── generate_cross_partner_k1s.py # Generate 8 cross-partner test K-1 PDFs (profiles 11-18)
+│   │   ├── run_all_pdfs.py              # Batch runner: process all PDFs + cross-partner validation
 │   │   ├── fill_irs_k1.py               # Fill official IRS form (single profile)
 │   │   ├── minify_instructions.py        # Markdown instruction minifier for AI context
 │   │   ├── generate_sample_k1.py         # Synthetic K-1 via ReportLab (unused)
 │   │   ├── k1_profiles_1_5.py            # Test profiles 1-5 (RE, VC, hedge, PE, energy)
-│   │   └── k1_profiles_6_10.py           # Test profiles 6-10 (LLC, medical, CRE, clean energy, restaurant)
+│   │   ├── k1_profiles_6_10.py           # Test profiles 6-10 (LLC, medical, CRE, clean energy, restaurant)
+│   │   └── k1_cross_partner_profiles.py  # Test profiles 11-18 (cross-partner & multi-year)
 │   └── data/                             # Mirrored from S3 bucket (LocalStack)
 │       ├── input/                        # Source PDFs
 │       │   ├── archive/                  # Blank IRS forms, samples
@@ -419,6 +490,7 @@ graph LR
     subgraph Storage["Storage"]
         S3["S3 + LocalStack"]
         boto3["boto3"]
+        DuckDB["DuckDB"]
     end
 
     subgraph Frontend["Frontend"]
@@ -436,6 +508,7 @@ graph LR
     PydanticAI --> DeepSeek
     Dagster --> WeasyPrint
     Dagster --> S3
+    Dagster --> DuckDB
     S3 --> boto3
     React --> Vite
     Express --> S3
@@ -454,6 +527,7 @@ graph LR
 | PDF Reports | WeasyPrint | HTML templates → professional PDFs |
 | Test Data | PyPDFForm + ReportLab | Fill official IRS K-1 blanks with sample data |
 | Storage | S3 + LocalStack + boto3 | Bucket-based I/O (local dev via LocalStack, prod-ready for AWS) |
+| Cross-Partner Store | DuckDB | Persistent K-1 records for cross-partner & multi-year validation |
 | Frontend | React + Vite + Express.js | Interactive dashboard backed by S3 API |
 
 ## Getting Started
@@ -517,6 +591,7 @@ The dashboard provides a tabbed audit view for each processed K-1:
 - **Summary** — extracted financial data, AI analysis, capital account movement
 - **PII & Redactions** — detection report, Presidio vs GLiNER comparison, full placeholder mapping table
 - **Validation** — deterministic check results (pass/warn/fail per rule), AI coherence scores, anomaly flags
+- **Cross-Partner** — cross-partner validation results across partnerships, multi-year continuity checks, duplicate detection
 - **AI Audit** — complete prompts, responses, output schemas, and token usage for extraction, analysis, and validation steps
 - **OCR Text** — raw and sanitized text side by side
 - **Metadata** — processing timestamps and output file paths
@@ -529,7 +604,7 @@ npm run dev               # Vite dev server on port 5173 (proxies /api to 3001)
 
 ## Sample Test Profiles
 
-The repo includes 10 realistic K-1 partner profiles for testing, each with distinct financial characteristics:
+The repo includes 18 realistic K-1 partner profiles for testing, each with distinct financial characteristics:
 
 | # | Partnership | Type | Characteristics |
 |---|---|---|---|
@@ -544,6 +619,19 @@ The repo includes 10 realistic K-1 partner profiles for testing, each with disti
 | 9 | Cascadia Clean Energy Fund | LP | Renewables, foreign taxes |
 | 10 | Southern Hospitality Restaurant Group | GP | Restaurant, S-Corp |
 
+**Cross-partner test profiles** (profiles 11-18) exercise cross-partner and multi-year validation rules:
+
+| # | Partnership | Type | Tests |
+|---|---|---|---|
+| 11 | Sunbelt Retail RE Fund II (2024) | LP | A2 (sum < 100%), A3 (proportionality) |
+| 12 | Sunbelt Retail RE Fund II (2024) | GP | A4 (capital consistency), A5 (identity) |
+| 13 | Pacific Coast Orthopedic Partners (2024) | GP | Second partner for same EIN |
+| 14 | Pacific Coast Orthopedic Partners (2024) | GP | **Invalid 85%** — triggers A1 (sum > 100%) |
+| 15 | Sunbelt Retail RE Fund II (2023) | LP | Valid B1 (capital continuity 2023→2024) |
+| 16 | Granite Peak Venture Partners III (2023) | GP | **Invalid B1** (capital mismatch) |
+| 17 | Stonebridge Offshore Macro Fund (2023) | GP | Valid B1 + **Invalid B4** (GP→LP type change) |
+| 18 | Sunbelt Retail RE Fund II (2023) | LP | Prior-year for profile 11 |
+
 A `scanned_k1_pdf` asset is also available to generate degraded scans (rotation, blur, noise, contrast reduction, JPEG compression) from the filled IRS form for stress-testing the OCR pipeline.
 
 ### Generating test data
@@ -556,8 +644,14 @@ cd pipeline
 # Generate all 10 test profile K-1 PDFs (recommended)
 uv run python scripts/generate_batch_k1s.py
 # → data/input/batch/profile_01_sunbelt_retail_real_estate_fund_ii_lp.pdf
-# → data/input/batch/profile_02_granite_peak_venture_partners_iii_lp.pdf
 # → ... (10 PDFs + manifest.json)
+
+# Generate 8 cross-partner test K-1 PDFs (profiles 11-18)
+uv run python scripts/generate_cross_partner_k1s.py
+# → data/input/batch/cross_partner/profile_11_*.pdf ... profile_18_*.pdf
+
+# Process all PDFs in parallel + run cross-partner validation
+uv run python scripts/run_all_pdfs.py
 
 # Generate a single filled IRS K-1 (one hardcoded profile)
 uv run python scripts/fill_irs_k1.py
@@ -566,10 +660,11 @@ uv run python scripts/fill_irs_k1.py
 
 You can also materialize the `irs_k1_form_fill` asset in the Dagster UI to generate the single filled form, or `scanned_k1_pdf` to generate a degraded scan version.
 
-Profile data for the 10 test partners is defined in:
+Profile data for the 18 test partners is defined in:
 
 - `scripts/k1_profiles_1_5.py` — real estate, venture capital, hedge fund, private equity, energy
 - `scripts/k1_profiles_6_10.py` — family LLC, medical practice, commercial RE, clean energy, restaurant
+- `scripts/k1_cross_partner_profiles.py` — cross-partner & multi-year continuity tests (profiles 11-18)
 
 > **Note:** `scripts/generate_sample_k1.py` generates a synthetic K-1 using ReportLab (not the official IRS form). It's kept for reference but the pipeline uses the official IRS form for realistic testing.
 
@@ -597,11 +692,16 @@ def defs():
 | `k1_deterministic_validation` | validation.py | 20+ rule checks (arithmetic, field, capital) |
 | `k1_ai_validation` | validation.py | DeepSeek → K1AIValidationResult |
 | `final_report` | assets.py | Generate all output files |
+| `k1_duckdb_ingest` | cross_partner.py | Persist extracted K-1 data to DuckDB |
+| `cross_partner_validation` | cross_partner.py | Run 11 cross-partner validation rules |
 | `processing_overview` | overview.py | Aggregate overview JSON + PDF |
 | `S3Storage` | resources.py | S3 ConfigurableResource (boto3/LocalStack) |
-| `k1_dropoff_processing_job` | sensors.py | Job for single-doc processing |
+| `DuckDBStore` | duckdb_store.py | DuckDB ConfigurableResource for cross-partner data |
+| `k1_dropoff_processing_job` | sensors.py | Job for single-doc processing (includes DuckDB ingest) |
+| `cross_partner_validation_job` | cross_partner.py | Job wrapping cross-partner validation |
 | `k1_dropoff_sensor` | sensors.py | File watcher for dropoff/ |
 | `k1_dropoff_failure_sensor` | sensors.py | Move PDF to failed/ on error |
+| `k1_cross_partner_on_success` | cross_partner.py | Trigger cross-partner validation after each run |
 | `overview_job` | overview.py | Job to regenerate overview |
 | `k1_overview_on_success` | overview.py | Trigger overview after success |
 
@@ -647,13 +747,12 @@ This project is an educational demo with LocalStack S3 and no deployment infrast
 - **On-premise inference (optional)** — for larger operations processing high document volumes (K-1s, 1099s, brokerage statements, trust documents, etc.), on-site inference using open-weight models (Llama, Mistral, Qwen) served via vLLM or TGI can eliminate data jurisdiction concerns entirely, remove per-call API costs, and avoid rate limits during peak tax season. Requires dedicated GPU hardware (e.g., A100/H100) and ML ops capacity
 
 **Validation & Compliance**
-- **Cross-partner validation** — extend the validation system with Phase 4 checks (partner share percentages sum to 100% across all partners, proportionality checks, duplicate detection) — requires cross-run data storage
 - **Dagster asset checks** — use [`@asset_check`](https://docs.dagster.io/concepts/assets/asset-checks) to enforce data quality gates between pipeline stages (e.g., OCR confidence thresholds, PII detection completeness, extraction field coverage)
 - **Input validation** — verify uploaded PDFs are actually K-1 forms before processing (page count, form number detection, IRS header matching)
 
 **Reports & Output**
 - **Branded PDF reports** — replace the generic HTML templates in `pdf_templates.py` with firm-branded designs (logo, color scheme, footer disclaimers, custom typography)
-- **Database storage** — persist extracted K-1 data to [DuckDB](https://duckdb.org/) on top of S3 for analytical queries across clients and tax years, with [DuckLake](https://ducklake.select/) as a catalog layer for discoverability and metadata management
+- **DuckDB on S3** — the local DuckDB store currently lives on disk; for multi-node deployments, back it with [DuckDB on S3](https://duckdb.org/docs/extensions/httpfs/s3api) or use [DuckLake](https://ducklake.select/) as a catalog layer for discoverability and metadata management
 
 **Operations**
 - **Testing** — add unit tests for PII detection accuracy, extraction field mapping, and PDF generation; integration tests for end-to-end pipeline runs
