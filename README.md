@@ -6,7 +6,7 @@ Built as an educational project demonstrating how to combine document processing
 
 ## Presentation
 
-[![Presentation](https://img.youtube.com/vi/3L-hBvwq5pk/hqdefault.jpg)](https://youtu.be/3L-hBvwq5pk)
+[![Presentation](https://img.youtube.com/vi/XCDDwKWYjhY/hqdefault.jpg)](https://www.youtube.com/watch?v=XCDDwKWYjhY)
 
 ## Architecture Overview
 
