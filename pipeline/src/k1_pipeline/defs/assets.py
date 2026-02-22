@@ -242,6 +242,87 @@ def irs_k1_form_fill(s3: S3Storage) -> dg.MaterializeResult:
 
 
 # ===========================================================================
+# Asset 0b: scanned_k1_pdf  (group=ingestion)
+# ===========================================================================
+
+
+@dg.asset(group_name="ingestion", deps=["irs_k1_form_fill"])
+def scanned_k1_pdf(s3: S3Storage) -> dg.MaterializeResult:
+    """Simulate a real-world scanned K-1 by degrading the filled PDF.
+
+    Downloads the clean filled PDF, converts pages to images, and applies
+    realistic scan artifacts (rotation, blur, noise, contrast reduction,
+    JPEG compression) before saving as a new PDF. This produces a harder
+    test input for the OCR pipeline.
+    """
+    import random
+
+    import numpy as np
+    from pdf2image import convert_from_path
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    source_key = s3.input_key("irs_k1_filled.pdf")
+    pdf_tmp = s3.download_to_tempfile(source_key, suffix=".pdf")
+
+    images = convert_from_path(pdf_tmp, dpi=300)
+    degraded_images: list[Image.Image] = []
+
+    rng = random.Random(42)  # reproducible degradation
+
+    for img in images:
+        # 1. Rotation / skew (±1-3°)
+        angle = rng.uniform(1, 3) * rng.choice([-1, 1])
+        img = img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=False, fillcolor=(255, 255, 255))
+
+        # 2. Gaussian blur (radius 1-2)
+        blur_radius = rng.uniform(1.0, 2.0)
+        img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+        # 3. Additive noise via numpy
+        arr = np.array(img, dtype=np.int16)
+        noise = np.random.default_rng(42).integers(-15, 16, size=arr.shape, dtype=np.int16)
+        arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
+        img = Image.fromarray(arr)
+
+        # 4. Contrast & brightness reduction
+        contrast_factor = rng.uniform(0.7, 0.9)
+        brightness_factor = rng.uniform(0.8, 1.1)
+        img = ImageEnhance.Contrast(img).enhance(contrast_factor)
+        img = ImageEnhance.Brightness(img).enhance(brightness_factor)
+
+        # 5. JPEG compression artifacts (save/reload at low quality)
+        jpeg_buf = io.BytesIO()
+        img.save(jpeg_buf, format="JPEG", quality=rng.randint(30, 50))
+        jpeg_buf.seek(0)
+        img = Image.open(jpeg_buf).convert("RGB")
+
+        degraded_images.append(img)
+
+    # Save degraded images as a multi-page PDF
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as out_tmp:
+        degraded_images[0].save(
+            out_tmp.name,
+            save_all=True,
+            append_images=degraded_images[1:],
+            format="PDF",
+            resolution=300,
+        )
+        output_key = s3.input_key("irs_k1_scanned.pdf")
+        s3.upload_from_file(out_tmp.name, output_key, content_type="application/pdf")
+
+    return dg.MaterializeResult(
+        metadata={
+            "source_key": dg.MetadataValue.text(source_key),
+            "output_key": dg.MetadataValue.text(output_key),
+            "pages_degraded": dg.MetadataValue.int(len(degraded_images)),
+            "effects_applied": dg.MetadataValue.text(
+                "rotation, gaussian_blur, noise, contrast_reduction, jpeg_compression"
+            ),
+        }
+    )
+
+
+# ===========================================================================
 # Asset 1: raw_k1_pdf  (group=ingestion)
 # ===========================================================================
 
@@ -306,13 +387,15 @@ def raw_k1_pdf(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
 
 @dg.asset(group_name="processing", deps=["raw_k1_pdf"])
 def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
-    """Convert K-1 PDF pages to images and extract text via OCR (Tesseract).
+    """Convert K-1 PDF pages to images and extract text via Surya OCR.
 
-    Uses pdf2image to rasterize each page and pytesseract to perform OCR.
-    The extracted text (per-page and combined) is saved to staging.
+    Uses pdf2image to rasterize each page and Surya (deep-learning OCR) to
+    extract layout-aware text. The extracted text (per-page and combined) is
+    saved to staging.
     """
-    import pytesseract
     from pdf2image import convert_from_path
+    from surya.detection import DetectionPredictor
+    from surya.recognition import RecognitionPredictor
 
     pdf_key = _run_pdf_key(s3, config.run_id)
     pdf_tmp = s3.download_to_tempfile(pdf_key, suffix=".pdf")
@@ -320,11 +403,16 @@ def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResu
     # Convert PDF pages to PIL images
     images = convert_from_path(pdf_tmp, dpi=300)
 
+    # Surya processes all pages as a batch
+    det_predictor = DetectionPredictor()
+    rec_predictor = RecognitionPredictor()
+    predictions = rec_predictor(images, langs=["en"], det_predictor=det_predictor)
+
     pages_text: list[dict] = []
     full_text_parts: list[str] = []
 
-    for idx, img in enumerate(images):
-        text = pytesseract.image_to_string(img)
+    for idx, page_pred in enumerate(predictions):
+        text = "\n".join(line.text for line in page_pred.text_lines)
         pages_text.append({"page": idx + 1, "text": text})
         full_text_parts.append(text)
 
@@ -451,6 +539,7 @@ K1_ALLOWLIST = {
     "tax matters partner", "partnership representative",
     "er member",  # OCR fragment from "partner/other LLC member"
     "address",
+    "k1", "k-1",  # short form references
 }
 
 
@@ -883,7 +972,7 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
 # ===========================================================================
 
 
-@dg.asset(group_name="output", deps=["ai_structured_extraction", "ai_financial_analysis", "pii_detection_report"])
+@dg.asset(group_name="output", deps=["ai_structured_extraction", "ai_financial_analysis", "pii_detection_report", "k1_deterministic_validation", "k1_ai_validation"])
 def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Combine all pipeline outputs into final deliverable reports.
 
@@ -897,9 +986,24 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     analysis_data = s3.read_json(s3.staging_key(config.run_id, "financial_analysis.json"))
     pii_report = s3.read_json(s3.staging_key(config.run_id, "pii_report.json"))
     pii_comparison = s3.read_json(s3.staging_key(config.run_id, "pii_comparison.json"))
+    det_validation_data = s3.read_json(s3.staging_key(config.run_id, "deterministic_validation.json"))
+    ai_validation_data = s3.read_json(s3.staging_key(config.run_id, "ai_validation.json"))
 
     k1_data = structured_data["extracted_data"]
     analysis = analysis_data["analysis"]
+    det_report = det_validation_data["report"]
+    ai_validation = ai_validation_data["ai_validation"]
+
+    # Compute overall validation status
+    if det_report.get("critical_count", 0) > 0:
+        overall_validation_status = "failed"
+    elif det_report.get("warning_count", 0) > 0:
+        overall_validation_status = "warnings"
+    elif ai_validation.get("overall_coherence_score", 1.0) < 0.5:
+        overall_validation_status = "warnings"
+    else:
+        overall_validation_status = "passed"
+
     now = datetime.now(timezone.utc)
 
     # Create a unique output directory per run based on source PDF and timestamp
@@ -919,9 +1023,15 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
             "total_entities_detected": pii_report["total_entities"],
             "entity_breakdown": pii_report["entity_counts"],
         },
+        "validation": {
+            "overall_status": overall_validation_status,
+            "deterministic_report": det_report,
+            "ai_validation": ai_validation,
+        },
         "ai_interactions": {
             "extraction": structured_data.get("ai_interaction"),
             "analysis": analysis_data.get("ai_interaction"),
+            "validation": ai_validation_data.get("ai_interaction"),
         },
         "processing_metadata": {
             "extraction_timestamp": structured_data.get("extracted_at"),
@@ -982,6 +1092,11 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
             "entity_counts": pii_report["entity_counts"],
             "entities_redacted": pii_report["total_entities"],
         },
+        "validation": {
+            "overall_status": overall_validation_status,
+            "deterministic": det_report,
+            "ai": ai_validation,
+        },
         "pii_comparison": {
             "presidio_only": {
                 "total": pii_comparison["presidio_only"]["total_entities"],
@@ -1004,6 +1119,8 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
             "extraction_timestamp": structured_data.get("extracted_at"),
             "analysis_timestamp": analysis_data.get("analyzed_at"),
             "pii_scan_timestamp": pii_report.get("analyzed_at"),
+            "deterministic_validation_timestamp": det_validation_data.get("validated_at"),
+            "ai_validation_timestamp": ai_validation_data.get("validated_at"),
             "report_generated_at": now_iso,
         },
         "output_files": {
@@ -1026,6 +1143,11 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
             "entities_redacted": pii_report["total_entities"],
         },
         metadata={"report_generated_at": now_iso},
+        validation={
+            "overall_status": overall_validation_status,
+            "deterministic": det_report,
+            "ai": ai_validation,
+        },
     )
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
