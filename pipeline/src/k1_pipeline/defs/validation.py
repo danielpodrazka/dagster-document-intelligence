@@ -838,7 +838,11 @@ Common OCR errors to watch for:
 - Blank-vs-zero confusion
 
 For the value_reasonableness dict, include a 0-1 score for every non-null field.
-A score of 1.0 means the value looks correct; 0.0 means it is almost certainly wrong."""
+A score of 1.0 means the value looks correct; 0.0 means it is almost certainly wrong.
+
+Remember: your primary task is to assess overall data quality by scoring coherence,
+estimating OCR confidence, classifying partnership type, flagging anomalies,
+and providing per-field reasonableness scores for every non-null field."""
 
     k1_json = k1_data.model_dump_json(indent=2)
     det_summary = deterministic_report.model_dump_json(indent=2)
@@ -857,7 +861,13 @@ A score of 1.0 means the value looks correct; 0.0 means it is almost certainly w
 {det_summary}
 
 ## Original OCR Text (sanitized)
-{sanitized_text}{guidelines_section}"""
+{sanitized_text}{guidelines_section}
+
+## Task
+Based on all the data above, provide your quality assessment. You must include:
+a coherence score (0-1), OCR confidence estimate (0-1), partnership type classification,
+anomaly flags for any suspicious values, and a reasonableness score (0-1) for every
+non-null field in value_reasonableness."""
 
     agent = Agent(
         "deepseek:deepseek-chat",
