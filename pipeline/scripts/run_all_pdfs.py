@@ -173,7 +173,6 @@ def run_cross_partner_validation_step() -> bool:
 def print_parquet_summary():
     """Print a summary of what's in the S3 parquet file."""
     import duckdb
-    import os
     import tempfile
 
     from k1_pipeline.defs.cross_partner import PARQUET_S3_KEY
@@ -195,7 +194,7 @@ def print_parquet_summary():
 
     conn = duckdb.connect()
     conn.execute(f"CREATE TABLE k1_records AS SELECT * FROM read_parquet('{tmp.name}')")
-    os.unlink(tmp.name)
+    Path(tmp.name).unlink()
 
     record_count = conn.execute("SELECT COUNT(*) FROM k1_records").fetchone()[0]
     print(f"Parquet Summary: {record_count} K-1 records")

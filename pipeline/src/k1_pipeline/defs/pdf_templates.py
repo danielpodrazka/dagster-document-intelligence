@@ -27,9 +27,11 @@ def _fmt_currency(value) -> str:
     """Format a number as currency, handling None and negatives."""
     if value is None:
         return "—"
-    try:
+    if isinstance(value, (int, float)):
         v = float(value)
-    except (TypeError, ValueError):
+    elif isinstance(value, str) and value.replace(".", "", 1).replace("-", "", 1).isdigit():
+        v = float(value)
+    else:
         return str(value)
     if v < 0:
         return f'<span style="color:{NEGATIVE}">(${ abs(v):,.0f})</span>'
@@ -39,19 +41,17 @@ def _fmt_currency(value) -> str:
 def _fmt_pct(value) -> str:
     if value is None:
         return "—"
-    try:
+    if isinstance(value, (int, float)):
         return f"{float(value):.1f}%"
-    except (TypeError, ValueError):
-        return str(value)
+    return str(value)
 
 
 def _fmt_ratio(value) -> str:
     if value is None:
         return "—"
-    try:
+    if isinstance(value, (int, float)):
         return f"{float(value):.2f}x"
-    except (TypeError, ValueError):
-        return str(value)
+    return str(value)
 
 
 # ---------------------------------------------------------------------------

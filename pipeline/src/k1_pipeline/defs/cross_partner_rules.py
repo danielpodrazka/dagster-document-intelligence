@@ -10,8 +10,6 @@ Result dict format:
     partnership_ein, tax_year, partner_tin, validated_at, run_id_trigger
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 
 

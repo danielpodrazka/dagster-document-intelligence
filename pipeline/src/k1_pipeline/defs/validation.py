@@ -8,11 +8,11 @@ Two-track validation architecture:
 Cross-partner validation (Phase 4) is out of scope — requires cross-run data storage.
 """
 
+import logging
 import re
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 import dagster as dg
 from pydantic import BaseModel, Field, model_validator
@@ -700,7 +700,7 @@ class AnomalyFlag(BaseModel):
     description: str = Field(..., description="What is unusual about this value")
     confidence: float = Field(..., ge=0.0, le=1.0,
                               description="AI confidence that this is a real anomaly")
-    suggested_correct_value: Optional[float] = Field(
+    suggested_correct_value: float | None = Field(
         None, description="If the AI can suggest a correction"
     )
 
@@ -751,7 +751,7 @@ class K1CombinedValidation(BaseModel):
     """Combined result of deterministic + AI validation for a single K-1."""
 
     deterministic_report: K1ValidationReport
-    ai_report: Optional[K1AIValidationResult] = None
+    ai_report: K1AIValidationResult | None = None
     overall_status: str = Field(
         "pending",
         description="Overall validation status: passed, warnings, failed"
@@ -802,7 +802,8 @@ def _load_validation_guidelines() -> str:
             enable_aggressive=True,
         )
         return result if isinstance(result, str) else result.text
-    except Exception:
+    except Exception as e:
+        logging.warning("Failed to load validation guidelines: %s", e)
         return ""
 
 

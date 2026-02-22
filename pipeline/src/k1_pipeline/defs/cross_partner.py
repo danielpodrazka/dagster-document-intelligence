@@ -11,9 +11,10 @@ Provides:
 import base64
 import fcntl
 import hashlib
-import os
+import logging
 import re
 import tempfile
+from functools import cache
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +31,11 @@ from k1_pipeline.defs.sensors import k1_dropoff_processing_job
 # ---------------------------------------------------------------------------
 
 PARQUET_S3_KEY = "output/k1_records.parquet"
-_PARQUET_LOCK_PATH = Path(tempfile.gettempdir()) / "k1_parquet.lock"
+
+
+@cache
+def _parquet_lock_path() -> Path:
+    return Path(tempfile.gettempdir()) / "k1_parquet.lock"
 
 _CREATE_TABLE_SQL = """
     CREATE TABLE k1_records (
@@ -89,8 +94,9 @@ def _load_parquet(s3: S3Storage):
         tmp.write(parquet_bytes)
         tmp.close()
         conn.execute(f"CREATE TABLE k1_records AS SELECT * FROM read_parquet('{tmp.name}')")
-        os.unlink(tmp.name)
-    except Exception:
+        Path(tmp.name).unlink()
+    except Exception as e:
+        logging.warning("Could not load existing parquet from S3, creating empty table: %s", e)
         conn.execute(_CREATE_TABLE_SQL)
     return conn
 
@@ -101,7 +107,7 @@ def _write_parquet(conn, s3: S3Storage) -> None:
     tmp.close()
     conn.execute(f"COPY k1_records TO '{tmp.name}' (FORMAT PARQUET)")
     s3.upload_from_file(tmp.name, PARQUET_S3_KEY, content_type="application/octet-stream")
-    os.unlink(tmp.name)
+    Path(tmp.name).unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +206,8 @@ def k1_parquet_upsert(
     # Try to load AI validation (may not exist if it failed)
     try:
         ai_data = s3.read_json(s3.staging_key(run_id, "ai_validation.json"))
-    except Exception:
+    except Exception as e:
+        logging.warning("Could not load AI validation data for run %s: %s", run_id, e)
         ai_data = None
 
     k1_data = structured_data["extracted_data"]
@@ -275,48 +282,46 @@ def k1_parquet_upsert(
     }
 
     # Locked read-modify-write of the parquet file
-    fd = open(_PARQUET_LOCK_PATH, "w")
-    try:
+    with open(_parquet_lock_path(), "w") as fd:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            conn = _load_parquet(s3)
 
-        conn = _load_parquet(s3)
-
-        # Check for duplicate PDF hash (replaces processed_files table)
-        result = conn.execute(
-            "SELECT run_id, ingested_at FROM k1_records WHERE pdf_sha256 = ?",
-            [pdf_sha256],
-        )
-        existing = result.fetchone()
-
-        c3_message = ""
-        if existing:
-            c3_message = (
-                f"Duplicate PDF detected: hash {pdf_sha256[:12]}... was previously "
-                f"processed as run_id={existing[0]} on {existing[1] or 'unknown'}"
+            # Check for duplicate PDF hash (replaces processed_files table)
+            result = conn.execute(
+                "SELECT run_id, ingested_at FROM k1_records WHERE pdf_sha256 = ?",
+                [pdf_sha256],
             )
-            context.log.warning(c3_message)
+            existing = result.fetchone()
 
-        # Upsert: delete existing record for this primary key, then insert
-        conn.execute(
-            "DELETE FROM k1_records WHERE partnership_ein = ? AND partner_tin = ? AND tax_year = ?",
-            [record["partnership_ein"], record["partner_tin"], record["tax_year"]],
-        )
+            c3_message = ""
+            if existing:
+                c3_message = (
+                    f"Duplicate PDF detected: hash {pdf_sha256[:12]}... was previously "
+                    f"processed as run_id={existing[0]} on {existing[1] or 'unknown'}"
+                )
+                context.log.warning(c3_message)
 
-        columns = list(record.keys())
-        placeholders = ", ".join(["?"] * len(columns))
-        col_names = ", ".join(columns)
-        conn.execute(
-            f"INSERT INTO k1_records ({col_names}) VALUES ({placeholders})",
-            list(record.values()),
-        )
+            # Upsert: delete existing record for this primary key, then insert
+            conn.execute(
+                "DELETE FROM k1_records WHERE partnership_ein = ? AND partner_tin = ? AND tax_year = ?",
+                [record["partnership_ein"], record["partner_tin"], record["tax_year"]],
+            )
 
-        record_count = conn.execute("SELECT COUNT(*) FROM k1_records").fetchone()[0]
+            columns = list(record.keys())
+            placeholders = ", ".join(["?"] * len(columns))
+            col_names = ", ".join(columns)
+            conn.execute(
+                f"INSERT INTO k1_records ({col_names}) VALUES ({placeholders})",
+                list(record.values()),
+            )
 
-        _write_parquet(conn, s3)
-        conn.close()
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+            record_count = conn.execute("SELECT COUNT(*) FROM k1_records").fetchone()[0]
+
+            _write_parquet(conn, s3)
+            conn.close()
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
     # Mask EIN for metadata display
     masked_ein = f"{partnership_ein[:3]}***{partnership_ein[-3:]}" if partnership_ein else "N/A"

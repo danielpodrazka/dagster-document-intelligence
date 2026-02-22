@@ -14,14 +14,14 @@ import csv
 import fcntl
 import io
 import json
+import logging
 import re
 import tempfile
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
-from typing import Optional
 
 import dagster as dg
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from k1_pipeline.defs.resources import S3Storage
@@ -29,8 +29,6 @@ from k1_pipeline.defs.resources import S3Storage
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-load_dotenv()
 
 
 # ---------------------------------------------------------------------------
@@ -41,55 +39,55 @@ load_dotenv()
 class K1ExtractedData(BaseModel):
     """Structured representation of data extracted from a K-1 tax form."""
 
-    tax_year: Optional[str] = Field(None, description="Tax year for the K-1")
-    partnership_name: Optional[str] = Field(None, description="Name of the partnership or S-Corp")
-    partner_type: Optional[str] = Field(None, description="General or Limited partner")
-    partner_share_percentage: Optional[float] = Field(
+    tax_year: str | None = Field(None, description="Tax year for the K-1")
+    partnership_name: str | None = Field(None, description="Name of the partnership or S-Corp")
+    partner_type: str | None = Field(None, description="General or Limited partner")
+    partner_share_percentage: float | None = Field(
         None, description="Partner's profit/loss/capital share percentage"
     )
-    ordinary_business_income: Optional[float] = Field(
+    ordinary_business_income: float | None = Field(
         None, description="Box 1 - Ordinary business income (loss)"
     )
-    rental_real_estate_income: Optional[float] = Field(
+    rental_real_estate_income: float | None = Field(
         None, description="Box 2 - Net rental real estate income (loss)"
     )
-    guaranteed_payments: Optional[float] = Field(
+    guaranteed_payments: float | None = Field(
         None, description="Box 4 - Guaranteed payments"
     )
-    interest_income: Optional[float] = Field(
+    interest_income: float | None = Field(
         None, description="Box 5 - Interest income"
     )
-    ordinary_dividends: Optional[float] = Field(
+    ordinary_dividends: float | None = Field(
         None, description="Box 6a - Ordinary dividends"
     )
-    qualified_dividends: Optional[float] = Field(
+    qualified_dividends: float | None = Field(
         None, description="Box 6b - Qualified dividends"
     )
-    short_term_capital_gains: Optional[float] = Field(
+    short_term_capital_gains: float | None = Field(
         None, description="Box 8 - Net short-term capital gain (loss)"
     )
-    long_term_capital_gains: Optional[float] = Field(
+    long_term_capital_gains: float | None = Field(
         None, description="Box 9a - Net long-term capital gain (loss)"
     )
-    section_179_deduction: Optional[float] = Field(
+    section_179_deduction: float | None = Field(
         None, description="Box 12 - Section 179 deduction"
     )
-    distributions: Optional[float] = Field(
+    distributions: float | None = Field(
         None, description="Box 19 - Distributions"
     )
-    capital_account_beginning: Optional[float] = Field(
+    capital_account_beginning: float | None = Field(
         None, description="Beginning capital account"
     )
-    capital_account_ending: Optional[float] = Field(
+    capital_account_ending: float | None = Field(
         None, description="Ending capital account"
     )
-    self_employment_earnings: Optional[float] = Field(
+    self_employment_earnings: float | None = Field(
         None, description="Box 14 - Self-employment earnings (loss)"
     )
-    foreign_taxes_paid: Optional[float] = Field(
+    foreign_taxes_paid: float | None = Field(
         None, description="Box 16 - Foreign taxes paid or accrued"
     )
-    qbi_deduction: Optional[float] = Field(
+    qbi_deduction: float | None = Field(
         None, description="Box 20 Code Z - Qualified business income deduction"
     )
 
@@ -97,22 +95,22 @@ class K1ExtractedData(BaseModel):
 class FinancialAnalysis(BaseModel):
     """AI-generated financial analysis of the K-1 data."""
 
-    total_income: Optional[float] = Field(
+    total_income: float | None = Field(
         None, description="Sum of all income items"
     )
-    total_deductions: Optional[float] = Field(
+    total_deductions: float | None = Field(
         None, description="Sum of all deduction items"
     )
-    net_taxable_income: Optional[float] = Field(
+    net_taxable_income: float | None = Field(
         None, description="Net taxable income from the K-1"
     )
-    effective_tax_considerations: Optional[str] = Field(
+    effective_tax_considerations: str | None = Field(
         None, description="Summary of key tax considerations"
     )
-    capital_gains_summary: Optional[str] = Field(
+    capital_gains_summary: str | None = Field(
         None, description="Summary of capital gains/losses"
     )
-    distribution_vs_income_ratio: Optional[float] = Field(
+    distribution_vs_income_ratio: float | None = Field(
         None, description="Ratio of distributions to total income"
     )
     key_observations: list[str] = Field(
@@ -349,14 +347,16 @@ def raw_k1_pdf(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
         tmp_path = s3.download_to_tempfile(pdf_key, suffix=".pdf")
         reader = PdfReader(tmp_path)
         page_count = len(reader.pages)
-    except Exception:
+    except Exception as exc:
+        logging.warning("pypdf page count failed, trying pdf2image: %s", exc)
         try:
             from pdf2image import pdfinfo_from_path
 
             tmp_path = s3.download_to_tempfile(pdf_key, suffix=".pdf")
             info = pdfinfo_from_path(tmp_path)
             page_count = info.get("Pages", 0)
-        except Exception:
+        except Exception as exc:
+            logging.warning("pdf2image page count also failed: %s", exc)
             page_count = -1  # unknown
 
     file_name = pdf_key.rsplit("/", 1)[-1]
@@ -389,7 +389,9 @@ def raw_k1_pdf(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
 # Surya OCR loads large models onto the GPU. A file lock serializes OCR across
 # processes, preventing CUDA out-of-memory errors when multiple pipeline runs
 # execute in parallel via Dagster's DefaultRunLauncher (separate subprocesses).
-_OCR_LOCK_PATH = Path(tempfile.gettempdir()) / "k1_ocr.lock"
+@cache
+def _ocr_lock_path() -> Path:
+    return Path(tempfile.gettempdir()) / "k1_ocr.lock"
 
 
 class _FileLock:
@@ -419,7 +421,7 @@ def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResu
     pdf_key = _run_pdf_key(s3, config.run_id)
     pdf_tmp = s3.download_to_tempfile(pdf_key, suffix=".pdf")
 
-    with _FileLock(_OCR_LOCK_PATH):
+    with _FileLock(_ocr_lock_path()):
         from pdf2image import convert_from_path
         from surya.detection import DetectionPredictor
         from surya.foundation import FoundationPredictor
@@ -1197,10 +1199,10 @@ def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     pipeline_results["output_files"]["pdf_report"] = pdf_key
 
     # ---- 5. Embed cross-partner results (if available) ----
-    try:
-        cross_partner = s3.read_json("output/cross_partner_results.json")
-        pipeline_results["cross_partner_validation"] = cross_partner
-    except Exception:
+    cross_partner_key = "output/cross_partner_results.json"
+    if s3.exists(cross_partner_key):
+        pipeline_results["cross_partner_validation"] = s3.read_json(cross_partner_key)
+    else:
         pipeline_results["cross_partner_validation"] = None
 
     s3.write_json(pipeline_results_key, pipeline_results)

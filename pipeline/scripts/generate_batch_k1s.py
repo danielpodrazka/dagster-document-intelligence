@@ -157,8 +157,7 @@ def generate_all() -> list[dict]:
 
         form_fields = _profile_to_form_fields(profile)
         filled = PdfWrapper(str(blank)).fill(form_fields)
-        with open(output_path, "wb") as f:
-            f.write(filled.read())
+        output_path.write_bytes(filled.read())
 
         entry = {
             "profile_number": i,

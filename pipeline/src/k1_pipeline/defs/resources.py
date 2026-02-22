@@ -13,19 +13,17 @@ from typing import Any
 
 import dagster as dg
 from dagster import ConfigurableResource
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
 
 
 class S3Storage(ConfigurableResource):
     """S3-backed storage resource with LocalStack defaults."""
 
-    bucket_name: str = os.environ.get(
-        "S3_BUCKET_NAME", "dagster-document-intelligence-etl"
-    )
-    endpoint_url: str = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
-    region_name: str = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    aws_access_key_id: str = os.environ.get("AWS_ACCESS_KEY_ID", "test")
-    aws_secret_access_key: str = os.environ.get("AWS_SECRET_ACCESS_KEY", "test")
+    bucket_name: str = Field(default_factory=lambda: os.environ.get("S3_BUCKET_NAME", "dagster-document-intelligence-etl"))
+    endpoint_url: str = Field(default_factory=lambda: os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566"))
+    region_name: str = Field(default_factory=lambda: os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+    aws_access_key_id: str = Field(default_factory=lambda: os.environ.get("AWS_ACCESS_KEY_ID", "test"))
+    aws_secret_access_key: str = Field(default_factory=lambda: os.environ.get("AWS_SECRET_ACCESS_KEY", "test"))
 
     _client_instance: Any = PrivateAttr(default=None)
 

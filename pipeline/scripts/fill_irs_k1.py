@@ -5,7 +5,6 @@ programmatically using PyPDFForm. This produces a realistic filled K-1
 that can be run through the OCR/PII/AI pipeline to test real-world performance.
 """
 
-import json
 from pathlib import Path
 from PyPDFForm import PdfWrapper
 
@@ -101,8 +100,7 @@ def fill_k1(output_path: Path | None = None) -> Path:
 
     out = output_path or FILLED_OUTPUT
     filled = PdfWrapper(str(BLANK_FORM)).fill(FILL_DATA)
-    with open(out, "wb") as f:
-        f.write(filled.read())
+    out.write_bytes(filled.read())
 
     print(f"Filled K-1 written to {out}")
     return out
