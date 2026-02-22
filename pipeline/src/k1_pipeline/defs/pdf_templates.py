@@ -217,6 +217,51 @@ def _base_css() -> str:
         background: #fde8e8;
         color: {NEGATIVE};
     }}
+    .badge-critical {{
+        background: #fde8e8;
+        color: {NEGATIVE};
+    }}
+    .badge-warning {{
+        background: #fef3cd;
+        color: #856404;
+    }}
+    .badge-advisory {{
+        background: {NAVY_50};
+        color: {TEXT_SECONDARY};
+    }}
+    .validation-banner {{
+        padding: 10px 16px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 11pt;
+        margin-bottom: 14px;
+    }}
+    .validation-banner.passed {{
+        background: #e6f4ed;
+        color: {POSITIVE};
+    }}
+    .validation-banner.warnings {{
+        background: #fef3cd;
+        color: #856404;
+    }}
+    .validation-banner.failed {{
+        background: #fde8e8;
+        color: {NEGATIVE};
+    }}
+    .score-bar {{
+        display: inline-block;
+        width: 100px;
+        height: 8px;
+        background: {BORDER};
+        border-radius: 4px;
+        overflow: hidden;
+        vertical-align: middle;
+        margin-left: 8px;
+    }}
+    .score-bar-fill {{
+        height: 100%;
+        border-radius: 4px;
+    }}
     """
 
 
@@ -319,6 +364,119 @@ def _analysis_section_html(analysis: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Validation section helper
+# ---------------------------------------------------------------------------
+
+
+def _validation_section_html(validation: dict | None) -> str:
+    """Render validation results section for PDF report."""
+    if not validation:
+        return ""
+
+    overall = validation.get("overall_status", "pending")
+    det = validation.get("deterministic", {})
+    ai = validation.get("ai", {})
+
+    status_labels = {
+        "passed": "All Checks Passed",
+        "warnings": "Warnings Detected",
+        "failed": "Critical Failures",
+    }
+    banner_label = status_labels.get(overall, overall.title())
+
+    parts = [
+        '<div class="section">',
+        '<div class="section-title">Validation Results</div>',
+        f'<div class="validation-banner {overall}">{banner_label}</div>',
+    ]
+
+    # Deterministic checks table (failed only)
+    checks = det.get("checks", [])
+    failed = [c for c in checks if not c.get("passed", True)]
+    if failed:
+        parts.append("<table>")
+        parts.append("<tr><th>Rule</th><th>Severity</th><th>Message</th></tr>")
+        for c in failed:
+            sev = c.get("severity", "")
+            badge_class = f"badge badge-{sev}"
+            parts.append(
+                f'<tr><td>{c.get("rule_id", "")}</td>'
+                f'<td><span class="{badge_class}">{sev}</span></td>'
+                f'<td>{c.get("message", "")}</td></tr>'
+            )
+        parts.append("</table>")
+    else:
+        parts.append("<p>All deterministic checks passed.</p>")
+
+    # Summary counts
+    parts.append('<div class="summary-row">')
+    parts.append(
+        f'<div class="summary-box"><div class="label">Total Checks</div>'
+        f'<div class="value">{len(checks)}</div></div>'
+    )
+    parts.append(
+        f'<div class="summary-box"><div class="label">Critical</div>'
+        f'<div class="value">{det.get("critical_count", 0)}</div></div>'
+    )
+    parts.append(
+        f'<div class="summary-box"><div class="label">Warnings</div>'
+        f'<div class="value">{det.get("warning_count", 0)}</div></div>'
+    )
+    parts.append(
+        f'<div class="summary-box"><div class="label">Advisory</div>'
+        f'<div class="value">{det.get("advisory_count", 0)}</div></div>'
+    )
+    parts.append("</div>")
+
+    # AI validation scores
+    if ai:
+        coherence = ai.get("overall_coherence_score", 0)
+        ocr_conf = ai.get("ocr_confidence_score", 0)
+
+        def _score_bar(score: float) -> str:
+            pct = int(score * 100)
+            color = (
+                "#1a6b42" if score >= 0.7
+                else "#856404" if score >= 0.5
+                else "#a12029"
+            )
+            return (
+                f'{pct}% <span class="score-bar">'
+                f'<span class="score-bar-fill" style="width:{pct}%;background:{color}"></span>'
+                f"</span>"
+            )
+
+        parts.append('<div class="section-title">AI Quality Assessment</div>')
+        parts.append(f"<p><strong>Coherence Score:</strong> {_score_bar(coherence)}</p>")
+        parts.append(f"<p><strong>OCR Confidence:</strong> {_score_bar(ocr_conf)}</p>")
+
+        ptype = ai.get("partnership_type_assessment", "")
+        if ptype:
+            parts.append(f"<p><strong>Partnership Type:</strong> {ptype}</p>")
+
+        anomalies = ai.get("anomaly_flags", [])
+        if anomalies:
+            parts.append("<p><strong>Anomaly Flags:</strong></p>")
+            parts.append('<ul class="obs-list">')
+            for a in anomalies:
+                conf_pct = int(a.get("confidence", 0) * 100)
+                parts.append(
+                    f'<li><strong>{a.get("field_name", "")}</strong>: '
+                    f'{a.get("description", "")} (confidence: {conf_pct}%)</li>'
+                )
+            parts.append("</ul>")
+
+        review = ai.get("recommended_review_fields", [])
+        if review:
+            parts.append(
+                f'<p><strong>Recommended for Review:</strong> {", ".join(review)}</p>'
+            )
+
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Single-file report
 # ---------------------------------------------------------------------------
 
@@ -327,6 +485,7 @@ def render_single_report_html(
     analysis: dict,
     pii_stats: dict,
     metadata: dict,
+    validation: dict | None = None,
 ) -> str:
     """Render a single K-1 analysis report as HTML."""
 
@@ -359,6 +518,8 @@ def render_single_report_html(
     <div class="section-title">PII Detection Summary</div>
     <p><strong>{pii_total}</strong> PII entities detected and <strong>{pii_redacted}</strong> redacted before AI processing.</p>
 </div>
+
+{_validation_section_html(validation)}
 
 <div class="page-break"></div>
 

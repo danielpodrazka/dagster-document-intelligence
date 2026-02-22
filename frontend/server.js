@@ -98,6 +98,7 @@ app.get('/api/reports', async (_req, res) => {
         total_income: analysis.total_income ?? null,
         capital_account_ending: k1.capital_account_ending ?? null,
         pii_entities: pii.total_entities_detected || 0,
+        validation_status: results.validation?.overall_status || null,
         processed_at: meta.report_generated_at || null,
       })
     }

@@ -104,6 +104,7 @@ function ReportList({ onSelect }) {
 
 const TABS = [
   { key: 'summary', label: 'Summary' },
+  { key: 'validation', label: 'Validation' },
   { key: 'pii', label: 'PII & Redactions' },
   { key: 'ai', label: 'AI Audit' },
   { key: 'ocr', label: 'OCR Text' },
@@ -326,6 +327,188 @@ function SummaryTab({ data, mapping }) {
       <div className="main-grid">
         <FinancialDataCard k1={pr.k1_data} mapping={mapping} />
         <AnalysisCard analysis={pr.financial_analysis} />
+      </div>
+    </>
+  )
+}
+
+// ================================================================
+//  Tab: Validation
+// ================================================================
+
+function ValidationTab({ data }) {
+  const pr = data.pipeline_results || {}
+  const validation = pr.validation
+
+  if (!validation) {
+    return (
+      <div className="card full-width">
+        <div className="card-body">
+          <p style={{ color: 'var(--text-muted)' }}>No validation data available. Re-run the pipeline to generate validation results.</p>
+        </div>
+      </div>
+    )
+  }
+
+  const det = validation.deterministic || {}
+  const ai = validation.ai || {}
+  const overall = validation.overall_status || 'pending'
+  const checks = det.checks || []
+  const failed = checks.filter(c => !c.passed)
+
+  const [severityFilter, setSeverityFilter] = useState('all')
+  const filteredFailed = severityFilter === 'all' ? failed : failed.filter(c => c.severity === severityFilter)
+
+  const statusColors = { passed: 'var(--positive)', warnings: '#856404', failed: 'var(--negative)' }
+  const statusLabels = { passed: 'All Checks Passed', warnings: 'Warnings Detected', failed: 'Critical Failures' }
+
+  const scoreBar = (score) => {
+    const pct = Math.round(score * 100)
+    const color = score >= 0.7 ? 'var(--positive)' : score >= 0.5 ? '#856404' : 'var(--negative)'
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span style={{ fontWeight: 600, minWidth: '36px' }}>{pct}%</span>
+        <div style={{ flex: 1, height: '8px', background: 'var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
+          <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: '4px' }} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="card full-width" style={{ borderLeft: `4px solid ${statusColors[overall] || 'var(--border)'}` }}>
+        <div className="card-body" style={{ padding: '1rem 1.25rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: '1.1rem', fontWeight: 700, color: statusColors[overall] }}>
+              {statusLabels[overall] || overall}
+            </div>
+            <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.85rem' }}>
+              <span><strong>{checks.length}</strong> checks run</span>
+              <span style={{ color: 'var(--negative)' }}><strong>{det.critical_count || 0}</strong> critical</span>
+              <span style={{ color: '#856404' }}><strong>{det.warning_count || 0}</strong> warnings</span>
+              <span style={{ color: 'var(--text-muted)' }}><strong>{det.advisory_count || 0}</strong> advisory</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="main-grid">
+        <div className="card full-width">
+          <div className="card-header">
+            <h2>Deterministic Checks</h2>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {['all', 'critical', 'warning', 'advisory'].map(s => (
+                <button
+                  key={s}
+                  className={`tab-btn ${severityFilter === s ? 'active' : ''}`}
+                  onClick={() => setSeverityFilter(s)}
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                >
+                  {s === 'all' ? `All (${failed.length})` : `${s} (${failed.filter(c => c.severity === s).length})`}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="card-body">
+            {filteredFailed.length === 0 ? (
+              <p style={{ color: 'var(--text-muted)' }}>
+                {severityFilter === 'all' ? 'All deterministic checks passed.' : `No ${severityFilter} issues found.`}
+              </p>
+            ) : (
+              <table className="financial-table">
+                <thead>
+                  <tr>
+                    <th>Rule</th>
+                    <th>Name</th>
+                    <th>Severity</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredFailed.map((c, i) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{c.rule_id}</td>
+                      <td>{c.rule_name}</td>
+                      <td>
+                        <span className={`tag ${c.severity === 'critical' ? 'compliance' : c.severity === 'warning' ? 'financial' : ''}`}>
+                          {c.severity}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '0.8rem' }}>{c.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        {ai.overall_coherence_score != null && (
+          <div className="card full-width">
+            <div className="card-header">
+              <h2>AI Quality Assessment</h2>
+              <span className="tag ai">DeepSeek</span>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Coherence Score</div>
+                  {scoreBar(ai.overall_coherence_score)}
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>OCR Confidence</div>
+                  {scoreBar(ai.ocr_confidence_score)}
+                </div>
+              </div>
+
+              {ai.partnership_type_assessment && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <strong>Partnership Type:</strong> {ai.partnership_type_assessment}
+                  {ai.partnership_type_consistency != null && (
+                    <span style={{ marginLeft: '8px', color: 'var(--text-muted)' }}>
+                      ({Math.round(ai.partnership_type_consistency * 100)}% consistency)
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {ai.anomaly_flags && ai.anomaly_flags.length > 0 && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <div className="analysis-section-heading">Anomaly Flags</div>
+                  <div className="analysis-list">
+                    {ai.anomaly_flags.map((a, i) => (
+                      <div key={i} className="analysis-item">
+                        <strong>{a.field_name}</strong>: {a.description}
+                        <span style={{ marginLeft: '8px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                          ({Math.round(a.confidence * 100)}% confidence)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {ai.narrative_assessment && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <div className="analysis-section-heading">Narrative Assessment</div>
+                  <p style={{ fontSize: '0.85rem', lineHeight: '1.6' }}>{ai.narrative_assessment}</p>
+                </div>
+              )}
+
+              {ai.recommended_review_fields && ai.recommended_review_fields.length > 0 && (
+                <div>
+                  <div className="analysis-section-heading">Recommended for Review</div>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    {ai.recommended_review_fields.map((f, i) => (
+                      <span key={i} className="tag compliance">{f}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </>
   )
@@ -723,6 +906,7 @@ function ReportDetail({ dirName, onBack }) {
       </div>
       <TabNav active={tab} onChange={setTab} />
       {tab === 'summary' && <SummaryTab data={data} mapping={mapping} />}
+      {tab === 'validation' && <ValidationTab data={data} />}
       {tab === 'pii' && <PIITab data={data} />}
       {tab === 'ai' && <AIAuditTab data={data} />}
       {tab === 'ocr' && <OCRTab data={data} />}

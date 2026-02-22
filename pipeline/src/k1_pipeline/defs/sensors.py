@@ -27,6 +27,8 @@ k1_dropoff_processing_job = dg.define_asset_job(
         "sanitized_text",
         "ai_structured_extraction",
         "ai_financial_analysis",
+        "k1_deterministic_validation",
+        "k1_ai_validation",
         "final_report",
     ),
     description="Process a single K-1 PDF dropped into the dropoff zone.",
@@ -43,6 +45,8 @@ ASSET_NAMES = [
     "sanitized_text",
     "ai_structured_extraction",
     "ai_financial_analysis",
+    "k1_deterministic_validation",
+    "k1_ai_validation",
     "final_report",
 ]
 
