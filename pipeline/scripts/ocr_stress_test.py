@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""OCR stress test: benchmark Surya accuracy across scan degradation levels.
+"""OCR stress test: benchmark Surya vs Tesseract accuracy across scan degradation levels.
 
 Generates progressively degraded versions of a filled K-1 PDF and measures
-how many ground-truth field values Surya OCR can recover at each level.
+how many ground-truth field values each OCR engine can recover at each level.
+Saves degraded page images locally for visual inspection.
 
 Usage:
     cd pipeline
     uv run python scripts/ocr_stress_test.py                    # uses S3
     uv run python scripts/ocr_stress_test.py path/to/filled.pdf # local file
+
+Degraded images are saved to: pipeline/data/output/ocr_stress_test/
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ from pathlib import Path
 import numpy as np
 from pdf2image import convert_from_path
 from PIL import Image, ImageEnhance, ImageFilter
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = PROJECT_ROOT / "data" / "output" / "ocr_stress_test"
 
 # Ground truth: exact values placed into the PDF by irs_k1_form_fill
 GROUND_TRUTH = {
@@ -111,6 +117,17 @@ def run_surya_ocr(images: list[Image.Image], det_predictor, rec_predictor) -> st
     )
 
 
+def run_tesseract_ocr(images: list[Image.Image]) -> str:
+    """Run Tesseract OCR on a list of PIL images, return concatenated text."""
+    import pytesseract
+
+    parts = []
+    for img in images:
+        text = pytesseract.image_to_string(img)
+        parts.append(text)
+    return "\n".join(parts)
+
+
 def score_ocr(text: str, ground_truth: dict[str, str]) -> dict[str, bool]:
     """Check which ground-truth values appear in OCR text."""
     return {label: value in text for label, value in ground_truth.items()}
@@ -145,55 +162,79 @@ def get_pdf_path() -> str:
     return tmp.name
 
 
+def save_degraded_images(
+    degraded: list[Image.Image], profile_name: str,
+) -> list[str]:
+    """Save degraded images to local output dir for visual inspection."""
+    profile_dir = OUTPUT_DIR / profile_name
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i, img in enumerate(degraded):
+        path = profile_dir / f"page_{i + 1}.png"
+        img.save(str(path))
+        paths.append(str(path))
+    return paths
+
+
 def print_results_table(
-    all_scores: dict[str, dict[str, bool]],
-    timings: dict[str, float],
+    engine_scores: dict[str, dict[str, dict[str, bool]]],
+    engine_timings: dict[str, dict[str, float]],
 ) -> None:
-    """Print a formatted results table to stdout."""
-    profile_names = list(all_scores.keys())
+    """Print a formatted comparison table for all engines."""
+    engines = list(engine_scores.keys())
+    profile_names = list(next(iter(engine_scores.values())).keys())
     field_names = list(GROUND_TRUTH.keys())
 
-    # Column widths
+    # Build composite column names: "clean/S" "clean/T" etc
+    engine_abbrevs = {e: e[0].upper() for e in engines}
+    # Handle collision (unlikely but safe)
+    if len(set(engine_abbrevs.values())) < len(engines):
+        engine_abbrevs = {e: e[:3].capitalize() for e in engines}
+
+    col_headers = []
+    for pname in profile_names:
+        for engine in engines:
+            col_headers.append(f"{pname}/{engine_abbrevs[engine]}")
+
     label_w = max(len(f) for f in field_names) + 2
-    col_w = max(max(len(n) for n in profile_names) + 2, 10)
+    col_w = max(max(len(h) for h in col_headers) + 2, 8)
 
-    try:
-        import surya
-        version = getattr(surya, "__version__", "unknown")
-    except Exception:
-        version = "unknown"
+    total_w = label_w + col_w * len(col_headers)
 
-    print(f"\nOCR Stress Test Results — Surya v{version}")
-    print("=" * (label_w + col_w * len(profile_names)))
+    print(f"\nOCR Stress Test — Surya (S) vs Tesseract (T)")
+    print("=" * total_w)
 
     # Header
-    header = "Field".ljust(label_w) + "".join(n.center(col_w) for n in profile_names)
+    header = "Field".ljust(label_w) + "".join(h.center(col_w) for h in col_headers)
     print(header)
-    print("-" * (label_w + col_w * len(profile_names)))
+    print("-" * total_w)
 
     # Rows
     for field in field_names:
         row = field.ljust(label_w)
         for pname in profile_names:
-            found = all_scores[pname][field]
-            marker = "\u2713" if found else "\u2717"
-            row += marker.center(col_w)
+            for engine in engines:
+                found = engine_scores[engine][pname][field]
+                marker = "\u2713" if found else "\u2717"
+                row += marker.center(col_w)
         print(row)
 
-    print("-" * (label_w + col_w * len(profile_names)))
+    print("-" * total_w)
 
     # Score row
     total = len(field_names)
     score_row = "SCORE".ljust(label_w)
     for pname in profile_names:
-        hit = sum(1 for v in all_scores[pname].values() if v)
-        score_row += f"{hit}/{total}".center(col_w)
+        for engine in engines:
+            hit = sum(1 for v in engine_scores[engine][pname].values() if v)
+            score_row += f"{hit}/{total}".center(col_w)
     print(score_row)
 
     # Time row
     time_row = "TIME".ljust(label_w)
     for pname in profile_names:
-        time_row += f"{timings[pname]:.1f}s".center(col_w)
+        for engine in engines:
+            time_row += f"{engine_timings[engine][pname]:.1f}s".center(col_w)
     print(time_row)
 
     print()
@@ -240,8 +281,10 @@ def main() -> None:
     rec_predictor = RecognitionPredictor(foundation)
     print("  Models loaded")
 
-    all_scores: dict[str, dict[str, bool]] = {}
-    timings: dict[str, float] = {}
+    surya_scores: dict[str, dict[str, bool]] = {}
+    surya_timings: dict[str, float] = {}
+    tess_scores: dict[str, dict[str, bool]] = {}
+    tess_timings: dict[str, float] = {}
     profile_details: list[dict] = []
 
     for profile in PROFILES:
@@ -251,31 +294,61 @@ def main() -> None:
         # Degrade each page
         degraded = [degrade_image(img.copy(), profile, rng) for img in base_images]
 
-        # OCR
+        # Save degraded images for visual inspection
+        saved = save_degraded_images(degraded, profile.name)
+        print(f"  Saved {len(saved)} image(s) to {OUTPUT_DIR / profile.name}/")
+
+        # Surya OCR
         t0 = time.perf_counter()
-        ocr_text = run_surya_ocr(degraded, det_predictor, rec_predictor)
-        elapsed = time.perf_counter() - t0
+        surya_text = run_surya_ocr(degraded, det_predictor, rec_predictor)
+        surya_elapsed = time.perf_counter() - t0
+        surya_result = score_ocr(surya_text, GROUND_TRUTH)
+        surya_hit = sum(1 for v in surya_result.values() if v)
 
-        # Score
-        scores = score_ocr(ocr_text, GROUND_TRUTH)
-        hit = sum(1 for v in scores.values() if v)
-        total = len(scores)
-        print(f"  Score: {hit}/{total}  ({elapsed:.1f}s)")
+        # Tesseract OCR
+        t0 = time.perf_counter()
+        tess_text = run_tesseract_ocr(degraded)
+        tess_elapsed = time.perf_counter() - t0
+        tess_result = score_ocr(tess_text, GROUND_TRUTH)
+        tess_hit = sum(1 for v in tess_result.values() if v)
 
-        all_scores[profile.name] = scores
-        timings[profile.name] = elapsed
+        total = len(GROUND_TRUTH)
+        print(f"  Surya:     {surya_hit}/{total}  ({surya_elapsed:.1f}s)")
+        print(f"  Tesseract: {tess_hit}/{total}  ({tess_elapsed:.1f}s)")
+
+        surya_scores[profile.name] = surya_result
+        surya_timings[profile.name] = surya_elapsed
+        tess_scores[profile.name] = tess_result
+        tess_timings[profile.name] = tess_elapsed
+
         profile_details.append({
             "profile": asdict(profile),
-            "scores": scores,
-            "hit_count": hit,
-            "total_fields": total,
-            "accuracy": hit / total if total else 0,
-            "ocr_time_seconds": round(elapsed, 2),
-            "ocr_text_length": len(ocr_text),
+            "surya": {
+                "scores": surya_result,
+                "hit_count": surya_hit,
+                "total_fields": total,
+                "accuracy": surya_hit / total if total else 0,
+                "ocr_time_seconds": round(surya_elapsed, 2),
+                "ocr_text_length": len(surya_text),
+            },
+            "tesseract": {
+                "scores": tess_result,
+                "hit_count": tess_hit,
+                "total_fields": total,
+                "accuracy": tess_hit / total if total else 0,
+                "ocr_time_seconds": round(tess_elapsed, 2),
+                "ocr_text_length": len(tess_text),
+            },
+            "saved_images": saved,
         })
 
     # Print summary table
-    print_results_table(all_scores, timings)
+    print_results_table(
+        {"surya": surya_scores, "tesseract": tess_scores},
+        {"surya": surya_timings, "tesseract": tess_timings},
+    )
+
+    print(f"Degraded images saved to: {OUTPUT_DIR}/")
 
     # Build and upload JSON report
     report = {

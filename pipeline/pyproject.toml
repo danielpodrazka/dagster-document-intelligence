@@ -26,6 +26,7 @@ dependencies = [
 dev = [
     "dagster-webserver",
     "dagster-dg-cli",
+    "pytesseract>=0.3.13",
 ]
 
 [build-system]
