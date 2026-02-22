@@ -1,26 +1,44 @@
 import express from 'express'
-import { readdir, readFile } from 'fs/promises'
-import { join, resolve, dirname } from 'path'
+import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync } from 'fs'
+import { S3Client, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PIPELINE_DATA = resolve(__dirname, '..', 'pipeline', 'data')
-const OUTPUT_DIR = join(PIPELINE_DATA, 'output')
-const STAGING_DIR = join(PIPELINE_DATA, 'staging')
+
+const s3 = new S3Client({
+  endpoint: process.env.AWS_ENDPOINT_URL || 'http://localhost:4566',
+  region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || 'test',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || 'test',
+  },
+  forcePathStyle: true,
+})
+const BUCKET = process.env.S3_BUCKET_NAME || 'dagster-document-intelligence-etl'
 
 const app = express()
 const PORT = process.env.PORT || 3001
 
 // --- Helpers ---
 
-async function readJsonSafe(filePath) {
+async function readS3Json(key) {
   try {
-    const raw = await readFile(filePath, 'utf-8')
-    return JSON.parse(raw)
+    const resp = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+    const text = await resp.Body.transformToString()
+    return JSON.parse(text)
   } catch {
     return null
   }
+}
+
+async function listS3Prefixes(prefix) {
+  const resp = await s3.send(new ListObjectsV2Command({
+    Bucket: BUCKET,
+    Prefix: prefix,
+    Delimiter: '/',
+  }))
+  return (resp.CommonPrefixes || []).map(p => p.Prefix.replace(prefix, '').replace(/\/$/, ''))
 }
 
 function deriveStagingDir(outputDirName) {
@@ -28,6 +46,12 @@ function deriveStagingDir(outputDirName) {
   // Staging dir: {stem} (without the timestamp suffix)
   const match = outputDirName.match(/^(.+)_\d{8}_\d{6}$/)
   return match ? match[1] : outputDirName
+}
+
+async function readStagingJson(runId, filename) {
+  // Try run_id-scoped staging first, then fall back to root staging
+  return await readS3Json(`staging/${runId}/${filename}`)
+    || await readS3Json(`staging/${filename}`)
 }
 
 function resolvePlaceholders(text, mapping) {
@@ -48,12 +72,11 @@ function cleanNullString(val) {
 // List all reports
 app.get('/api/reports', async (_req, res) => {
   try {
-    const entries = await readdir(OUTPUT_DIR, { withFileTypes: true })
-    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort()
+    const dirs = await listS3Prefixes('output/')
 
     const reports = []
-    for (const dir of dirs) {
-      const results = await readJsonSafe(join(OUTPUT_DIR, dir, 'pipeline_results.json'))
+    for (const dir of dirs.sort()) {
+      const results = await readS3Json(`output/${dir}/pipeline_results.json`)
       if (!results) continue
 
       const k1 = results.k1_data || {}
@@ -63,7 +86,7 @@ app.get('/api/reports', async (_req, res) => {
 
       // Load placeholder mapping from staging to resolve names
       const runId = deriveStagingDir(dir)
-      const sanitized = await readJsonSafe(join(STAGING_DIR, runId, 'sanitized_text.json'))
+      const sanitized = await readStagingJson(runId, 'sanitized_text.json')
       const mapping = sanitized?.placeholder_mapping || null
 
       reports.push({
@@ -88,27 +111,21 @@ app.get('/api/reports', async (_req, res) => {
 // Get full report detail
 app.get('/api/reports/:dirName', async (req, res) => {
   const { dirName } = req.params
-  const outputPath = join(OUTPUT_DIR, dirName)
-
-  if (!existsSync(outputPath)) {
-    return res.status(404).json({ error: 'Report not found' })
-  }
 
   // Load output files
-  const pipelineResults = await readJsonSafe(join(outputPath, 'pipeline_results.json'))
-  const k1Report = await readJsonSafe(join(outputPath, 'k1_report.json'))
+  const pipelineResults = await readS3Json(`output/${dirName}/pipeline_results.json`)
+  const k1Report = await readS3Json(`output/${dirName}/k1_report.json`)
 
   if (!pipelineResults) {
-    return res.status(404).json({ error: 'pipeline_results.json not found' })
+    return res.status(404).json({ error: 'Report not found' })
   }
 
   // Load staging files
   const runId = deriveStagingDir(dirName)
-  const stagingPath = join(STAGING_DIR, runId)
 
-  const sanitizedText = await readJsonSafe(join(stagingPath, 'sanitized_text.json'))
-  const ocrText = await readJsonSafe(join(stagingPath, 'ocr_text.json'))
-  const piiReport = await readJsonSafe(join(stagingPath, 'pii_report.json'))
+  const sanitizedText = await readStagingJson(runId, 'sanitized_text.json')
+  const ocrText = await readStagingJson(runId, 'ocr_text.json')
+  const piiReport = await readStagingJson(runId, 'pii_report.json')
 
   res.json({
     directory: dirName,
@@ -134,5 +151,5 @@ if (existsSync(distPath)) {
 
 app.listen(PORT, () => {
   console.log(`K-1 Audit Server running at http://localhost:${PORT}`)
-  console.log(`Reading pipeline data from: ${PIPELINE_DATA}`)
+  console.log(`Reading pipeline data from S3: ${BUCKET}`)
 })

@@ -2218,6 +2218,7 @@ name = "k1-pipeline"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "boto3" },
     { name = "dagster" },
     { name = "en-core-web-lg" },
     { name = "gliner" },
@@ -2242,6 +2243,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3" },
     { name = "dagster", specifier = "==1.12.14" },
     { name = "en-core-web-lg", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0.tar.gz" },
     { name = "gliner" },

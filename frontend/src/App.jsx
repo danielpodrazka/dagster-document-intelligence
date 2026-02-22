@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
 // --- Helpers ---
@@ -597,6 +597,18 @@ function OCRTab({ data }) {
   const ocrText = data.ocr_text
   const sanitizedText = data.sanitized_text
 
+  const rawRef = useRef(null)
+  const sanitizedRef = useRef(null)
+  const syncing = useRef(false)
+
+  const handleScroll = useCallback((source, target) => {
+    if (syncing.current || !source.current || !target.current) return
+    syncing.current = true
+    target.current.scrollTop = source.current.scrollTop
+    target.current.scrollLeft = source.current.scrollLeft
+    syncing.current = false
+  }, [])
+
   if (!ocrText) {
     return (
       <div className="card full-width">
@@ -622,11 +634,11 @@ function OCRTab({ data }) {
           <div className="ocr-side-by-side">
             <div className="ocr-panel">
               <div className="ocr-panel-label">Raw OCR Text</div>
-              <pre className="ocr-text">{ocrText}</pre>
+              <pre className="ocr-text" ref={rawRef} onScroll={() => handleScroll(rawRef, sanitizedRef)}>{ocrText}</pre>
             </div>
             <div className="ocr-panel">
               <div className="ocr-panel-label">Sanitized (PII Redacted)</div>
-              <pre className="ocr-text sanitized">{sanitizedText || 'Not available'}</pre>
+              <pre className="ocr-text sanitized" ref={sanitizedRef} onScroll={() => handleScroll(sanitizedRef, rawRef)}>{sanitizedText || 'Not available'}</pre>
             </div>
           </div>
         ) : (

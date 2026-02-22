@@ -1,32 +1,18 @@
 """
-File-watching sensor for automatic K-1 PDF processing.
+S3-based sensor for automatic K-1 PDF processing.
 
-Watches data/dropoff/ for new PDFs and triggers the single-document
-processing pipeline when files appear. Supports parallel processing
-via per-run staging isolation.
+Watches the dropoff/ prefix in S3 for new PDFs and triggers the
+single-document processing pipeline when files appear. Supports
+parallel processing via per-run staging isolation.
 """
 
 from __future__ import annotations
 
-import shutil
 import time
-from pathlib import Path
 
 import dagster as dg
 
-# ---------------------------------------------------------------------------
-# Path constants (same parents[3] logic as assets.py)
-# ---------------------------------------------------------------------------
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DATA_INPUT = PROJECT_ROOT / "data" / "input"
-DATA_DROPOFF = PROJECT_ROOT / "data" / "dropoff"
-DATA_DROPOFF_PROCESSED = DATA_DROPOFF / "processed"
-DATA_DROPOFF_FAILED = DATA_DROPOFF / "failed"
-
-DATA_DROPOFF.mkdir(parents=True, exist_ok=True)
-DATA_DROPOFF_PROCESSED.mkdir(parents=True, exist_ok=True)
-DATA_DROPOFF_FAILED.mkdir(parents=True, exist_ok=True)
+from k1_pipeline.defs.resources import S3Storage
 
 # ---------------------------------------------------------------------------
 # Job: select the processing pipeline, excluding irs_k1_form_fill
@@ -61,22 +47,11 @@ ASSET_NAMES = [
 ]
 
 
-def _make_run_id(pdf_path: Path) -> str:
-    """Generate a unique run ID from PDF stem + current timestamp."""
-    return f"{pdf_path.stem}_{int(time.time())}"
-
-
-def _move_to_processed(pdf_path: Path) -> Path:
-    """Move a PDF from dropoff/ to dropoff/processed/, handling name collisions."""
-    dest = DATA_DROPOFF_PROCESSED / pdf_path.name
-    if dest.exists():
-        stem, suffix = pdf_path.stem, pdf_path.suffix
-        counter = 1
-        while dest.exists():
-            dest = DATA_DROPOFF_PROCESSED / f"{stem}_{counter}{suffix}"
-            counter += 1
-    shutil.move(str(pdf_path), str(dest))
-    return dest
+def _make_run_id(pdf_key: str) -> str:
+    """Generate a unique run ID from the S3 key's filename stem + current timestamp."""
+    filename = pdf_key.rsplit("/", 1)[-1]
+    stem = filename.rsplit(".", 1)[0]
+    return f"{stem}_{int(time.time())}"
 
 
 # ---------------------------------------------------------------------------
@@ -89,29 +64,37 @@ def _move_to_processed(pdf_path: Path) -> Path:
     minimum_interval_seconds=30,
     default_status=dg.DefaultSensorStatus.STOPPED,
     description=(
-        "Watches data/dropoff/ for new K-1 PDF files. "
+        "Watches the S3 dropoff/ prefix for new K-1 PDF files. "
         "When new PDFs appear, triggers parallel processing runs."
     ),
 )
-def k1_dropoff_sensor(context: dg.SensorEvaluationContext) -> dg.SensorResult:
-    if not DATA_DROPOFF.exists():
-        return dg.SensorResult(skip_reason="Dropoff directory does not exist.")
+def k1_dropoff_sensor(
+    context: dg.SensorEvaluationContext, s3: S3Storage
+) -> dg.SensorResult:
+    pdf_keys = s3.list_objects("dropoff/", suffix=".pdf")
 
-    pdf_files = sorted(DATA_DROPOFF.glob("*.pdf"))
-    if not pdf_files:
-        return dg.SensorResult(skip_reason="No PDF files in dropoff directory.")
+    # Filter out already-processed or failed files
+    pdf_keys = [
+        k
+        for k in pdf_keys
+        if not k.startswith("dropoff/processed/")
+        and not k.startswith("dropoff/failed/")
+    ]
+
+    if not pdf_keys:
+        return dg.SensorResult(skip_reason="No PDF files in dropoff prefix.")
 
     run_requests = []
-    for pdf_path in pdf_files:
-        run_id = _make_run_id(pdf_path)
-        context.log.info(f"New PDF: {pdf_path.name} -> run_id={run_id}")
+    for pdf_key in pdf_keys:
+        run_id = _make_run_id(pdf_key)
+        filename = pdf_key.rsplit("/", 1)[-1]
+        context.log.info(f"New PDF: {filename} -> run_id={run_id}")
 
-        # Copy to data/input/{run_id}.pdf so _run_pdf_path() finds it
-        dest = DATA_INPUT / f"{run_id}.pdf"
-        shutil.copy2(str(pdf_path), str(dest))
+        # Copy to input/{run_id}.pdf so assets can find it
+        s3.copy_object(pdf_key, f"input/{run_id}.pdf")
 
-        # Move original to processed/
-        _move_to_processed(pdf_path)
+        # Move original to dropoff/processed/
+        s3.move_object(pdf_key, f"dropoff/processed/{filename}")
 
         # Build run config: pass run_id to every asset
         run_requests.append(
@@ -125,7 +108,7 @@ def k1_dropoff_sensor(context: dg.SensorEvaluationContext) -> dg.SensorResult:
                 },
                 tags={
                     "source": "dropoff_sensor",
-                    "original_filename": pdf_path.name,
+                    "original_filename": filename,
                     "run_id": run_id,
                 },
             ),
@@ -144,24 +127,31 @@ def k1_dropoff_sensor(context: dg.SensorEvaluationContext) -> dg.SensorResult:
     monitored_jobs=[k1_dropoff_processing_job],
     description="Moves the original PDF from processed/ to failed/ when a dropoff run fails.",
 )
-def k1_dropoff_failure_sensor(context: dg.RunFailureSensorContext):
+def k1_dropoff_failure_sensor(
+    context: dg.RunFailureSensorContext, s3: S3Storage
+):
     filename = context.dagster_run.tags.get("original_filename")
     if not filename:
         return
 
     # Find the file in processed/ and move it to failed/
-    source = DATA_DROPOFF_PROCESSED / filename
-    if not source.exists():
-        # Try numbered variants (e.g. report_1.pdf)
-        stem, suffix = Path(filename).stem, Path(filename).suffix
-        for candidate in DATA_DROPOFF_PROCESSED.glob(f"{stem}*{suffix}"):
-            source = candidate
-            break
+    source_key = f"dropoff/processed/{filename}"
+    candidates = s3.list_objects("dropoff/processed/", suffix=".pdf")
 
-    if not source.exists():
-        context.log.warning(f"Could not find {filename} in processed/ to move to failed/")
-        return
+    if source_key not in candidates:
+        # Try to find a numbered variant
+        stem = filename.rsplit(".", 1)[0]
+        for candidate in candidates:
+            candidate_filename = candidate.rsplit("/", 1)[-1]
+            if candidate_filename.startswith(stem):
+                source_key = candidate
+                filename = candidate_filename
+                break
+        else:
+            context.log.warning(
+                f"Could not find {filename} in processed/ to move to failed/"
+            )
+            return
 
-    dest = DATA_DROPOFF_FAILED / source.name
-    shutil.move(str(source), str(dest))
-    context.log.info(f"Moved {source.name} to failed/ due to run failure")
+    s3.move_object(source_key, f"dropoff/failed/{filename}")
+    context.log.info(f"Moved {filename} to failed/ due to run failure")

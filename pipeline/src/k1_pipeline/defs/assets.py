@@ -11,7 +11,9 @@ and reporting on K-1 partnership tax documents. The pipeline demonstrates:
 
 import base64
 import csv
+import io
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -20,21 +22,13 @@ import dagster as dg
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from k1_pipeline.defs.resources import S3Storage
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 load_dotenv()
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]  # up from defs/ -> k1_pipeline/ -> src/ -> project root
-DATA_INPUT = PROJECT_ROOT / "data" / "input"
-DATA_STAGING = PROJECT_ROOT / "data" / "staging"
-DATA_OUTPUT = PROJECT_ROOT / "data" / "output"
-
-# Ensure directories exist
-DATA_INPUT.mkdir(parents=True, exist_ok=True)
-DATA_STAGING.mkdir(parents=True, exist_ok=True)
-DATA_OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -139,23 +133,17 @@ class K1RunConfig(dg.Config):
     run_id: str = ""
 
 
-def _run_staging(run_id: str) -> Path:
-    """Return the staging directory for this run (namespaced if run_id is set)."""
-    d = DATA_STAGING / run_id if run_id else DATA_STAGING
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+IRS_K1_FORM_URL = "https://www.irs.gov/pub/irs-prior/f1065sk1--2024.pdf"
 
 
-def _run_pdf_path(run_id: str) -> Path:
-    """Return the PDF path for this run, or fall back to first PDF in input/."""
+def _run_pdf_key(s3: S3Storage, run_id: str) -> str:
+    """Return the S3 key for the PDF for this run, or the first PDF in input/."""
     if run_id:
-        return DATA_INPUT / f"{run_id}.pdf"
-    pdfs = sorted(DATA_INPUT.glob("*.pdf"))
+        return s3.input_key(f"{run_id}.pdf")
+    pdfs = s3.list_objects("input/", suffix=".pdf")
+    pdfs = [k for k in pdfs if not k.startswith("input/archive/") and not k.startswith("input/batch/")]
     if not pdfs:
-        raise FileNotFoundError(
-            f"No PDF files found in {DATA_INPUT}. "
-            "Please place a K-1 PDF in data/input/ before running the pipeline."
-        )
+        raise FileNotFoundError("No PDF files found in input/")
     return pdfs[0]
 
 
@@ -164,12 +152,8 @@ def _run_pdf_path(run_id: str) -> Path:
 # ===========================================================================
 
 
-IRS_K1_BLANK = DATA_INPUT / "archive" / "irs_k1_2024.pdf"
-IRS_K1_FORM_URL = "https://www.irs.gov/pub/irs-prior/f1065sk1--2024.pdf"
-
-
 @dg.asset(group_name="ingestion")
-def irs_k1_form_fill() -> dg.MaterializeResult:
+def irs_k1_form_fill(s3: S3Storage) -> dg.MaterializeResult:
     """Download the official IRS Schedule K-1 (Form 1065) and fill it with sample data.
 
     Uses PyPDFForm to programmatically fill the real IRS PDF form with
@@ -179,12 +163,13 @@ def irs_k1_form_fill() -> dg.MaterializeResult:
     from PyPDFForm import PdfWrapper
 
     # Download blank form if needed
-    blank_path = IRS_K1_BLANK
-    if not blank_path.exists():
+    blank_key = "input/archive/irs_k1_2024.pdf"
+    if not s3.exists(blank_key):
         import urllib.request
 
-        blank_path.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(IRS_K1_FORM_URL, str(blank_path))
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            urllib.request.urlretrieve(IRS_K1_FORM_URL, tmp.name)
+            s3.upload_from_file(tmp.name, blank_key, content_type="application/pdf")
 
     fill_data = {
         # Part I: Partnership
@@ -236,16 +221,21 @@ def irs_k1_form_fill() -> dg.MaterializeResult:
         "f1_94[0]": "Z  127,450",
     }
 
-    filled = PdfWrapper(str(blank_path)).fill(fill_data)
-    output_path = DATA_INPUT / "irs_k1_filled.pdf"
-    with open(output_path, "wb") as f:
-        f.write(filled.read())
+    # Download blank to temp, fill, upload result
+    blank_tmp = s3.download_to_tempfile(blank_key, suffix=".pdf")
+    filled = PdfWrapper(blank_tmp).fill(fill_data)
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as out_tmp:
+        out_tmp.write(filled.read())
+        out_tmp.flush()
+        output_key = s3.input_key("irs_k1_filled.pdf")
+        s3.upload_from_file(out_tmp.name, output_key, content_type="application/pdf")
 
     return dg.MaterializeResult(
         metadata={
             "source_form": dg.MetadataValue.text("IRS Schedule K-1 (Form 1065) 2024"),
             "source_url": dg.MetadataValue.url(IRS_K1_FORM_URL),
-            "output_path": dg.MetadataValue.path(str(output_path)),
+            "output_key": dg.MetadataValue.text(output_key),
             "fields_filled": dg.MetadataValue.int(len(fill_data)),
         }
     )
@@ -257,16 +247,15 @@ def irs_k1_form_fill() -> dg.MaterializeResult:
 
 
 @dg.asset(group_name="ingestion", deps=["irs_k1_form_fill"])
-def raw_k1_pdf(config: K1RunConfig) -> dg.MaterializeResult:
-    """Ingest a K-1 PDF from data/input/ and store its raw bytes (base64) in staging.
+def raw_k1_pdf(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
+    """Ingest a K-1 PDF from S3 input/ and store its raw bytes (base64) in staging.
 
     This is the entry point of the pipeline. It reads the first PDF found in
-    the input directory, encodes it as base64, and persists it to a JSON file
-    in data/staging/ so downstream assets have a reproducible snapshot.
+    the input prefix, encodes it as base64, and persists it to a JSON file
+    in staging/ so downstream assets have a reproducible snapshot.
     """
-    staging = _run_staging(config.run_id)
-    pdf_path = _run_pdf_path(config.run_id)
-    pdf_bytes = pdf_path.read_bytes()
+    pdf_key = _run_pdf_key(s3, config.run_id)
+    pdf_bytes = s3.read_bytes(pdf_key)
     encoded = base64.b64encode(pdf_bytes).decode("utf-8")
 
     # Attempt to get page count via PyPDF if available, otherwise fall back
@@ -274,35 +263,38 @@ def raw_k1_pdf(config: K1RunConfig) -> dg.MaterializeResult:
     try:
         from pypdf import PdfReader  # type: ignore[import-untyped]
 
-        reader = PdfReader(str(pdf_path))
+        tmp_path = s3.download_to_tempfile(pdf_key, suffix=".pdf")
+        reader = PdfReader(tmp_path)
         page_count = len(reader.pages)
     except Exception:
-        # If pypdf is not installed, try pdf2image to count pages
         try:
             from pdf2image import pdfinfo_from_path
 
-            info = pdfinfo_from_path(str(pdf_path))
+            tmp_path = s3.download_to_tempfile(pdf_key, suffix=".pdf")
+            info = pdfinfo_from_path(tmp_path)
             page_count = info.get("Pages", 0)
         except Exception:
             page_count = -1  # unknown
 
+    file_name = pdf_key.rsplit("/", 1)[-1]
+
     staging_payload = {
-        "file_name": pdf_path.name,
+        "file_name": file_name,
         "file_size_bytes": len(pdf_bytes),
         "page_count": page_count,
         "base64_data": encoded,
         "ingested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    staging_path = staging / "raw_pdf_bytes.json"
-    staging_path.write_text(json.dumps(staging_payload, indent=2))
+    staging_key = s3.staging_key(config.run_id, "raw_pdf_bytes.json")
+    s3.write_json(staging_key, staging_payload)
 
     return dg.MaterializeResult(
         metadata={
-            "file_name": dg.MetadataValue.text(pdf_path.name),
+            "file_name": dg.MetadataValue.text(file_name),
             "file_size_bytes": dg.MetadataValue.int(len(pdf_bytes)),
             "page_count": dg.MetadataValue.int(page_count),
-            "staging_path": dg.MetadataValue.path(str(staging_path)),
+            "staging_key": dg.MetadataValue.text(staging_key),
         }
     )
 
@@ -313,7 +305,7 @@ def raw_k1_pdf(config: K1RunConfig) -> dg.MaterializeResult:
 
 
 @dg.asset(group_name="processing", deps=["raw_k1_pdf"])
-def ocr_extracted_text(config: K1RunConfig) -> dg.MaterializeResult:
+def ocr_extracted_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Convert K-1 PDF pages to images and extract text via OCR (Tesseract).
 
     Uses pdf2image to rasterize each page and pytesseract to perform OCR.
@@ -322,11 +314,11 @@ def ocr_extracted_text(config: K1RunConfig) -> dg.MaterializeResult:
     import pytesseract
     from pdf2image import convert_from_path
 
-    staging = _run_staging(config.run_id)
-    pdf_path = _run_pdf_path(config.run_id)
+    pdf_key = _run_pdf_key(s3, config.run_id)
+    pdf_tmp = s3.download_to_tempfile(pdf_key, suffix=".pdf")
 
     # Convert PDF pages to PIL images
-    images = convert_from_path(str(pdf_path), dpi=300)
+    images = convert_from_path(pdf_tmp, dpi=300)
 
     pages_text: list[dict] = []
     full_text_parts: list[str] = []
@@ -338,9 +330,10 @@ def ocr_extracted_text(config: K1RunConfig) -> dg.MaterializeResult:
 
     full_text = "\n\n--- PAGE BREAK ---\n\n".join(full_text_parts)
     total_chars = sum(len(p["text"]) for p in pages_text)
+    file_name = pdf_key.rsplit("/", 1)[-1]
 
     staging_payload = {
-        "source_file": pdf_path.name,
+        "source_file": file_name,
         "page_count": len(pages_text),
         "pages": pages_text,
         "full_text": full_text,
@@ -348,8 +341,8 @@ def ocr_extracted_text(config: K1RunConfig) -> dg.MaterializeResult:
         "extracted_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    staging_path = staging / "ocr_text.json"
-    staging_path.write_text(json.dumps(staging_payload, indent=2))
+    staging_key = s3.staging_key(config.run_id, "ocr_text.json")
+    s3.write_json(staging_key, staging_payload)
 
     preview = full_text[:500] + ("..." if len(full_text) > 500 else "")
 
@@ -358,7 +351,7 @@ def ocr_extracted_text(config: K1RunConfig) -> dg.MaterializeResult:
             "page_count": dg.MetadataValue.int(len(pages_text)),
             "total_characters": dg.MetadataValue.int(total_chars),
             "text_preview": dg.MetadataValue.md(f"```\n{preview}\n```"),
-            "staging_path": dg.MetadataValue.path(str(staging_path)),
+            "staging_key": dg.MetadataValue.text(staging_key),
         }
     )
 
@@ -448,8 +441,34 @@ def _run_presidio_plus_gliner(full_text: str, entities_to_detect: list[str]) -> 
     return analyzer.analyze(text=full_text, entities=all_entities, language="en")
 
 
+# Common K-1 form terms that PII detectors incorrectly flag as entities
+K1_ALLOWLIST = {
+    "partner", "partners", "partnership", "partnerships",
+    "general partner", "limited partner", "domestic partner", "foreign partner",
+    "schedule k-1", "k-1", "form 1065", "form 1120-s",
+    "keogh", "ira", "llc", "llp", "lp",
+    "individual", "corporation", "trust", "estate",
+    "tax matters partner", "partnership representative",
+    "er member",  # OCR fragment from "partner/other LLC member"
+    "address",
+}
+
+
+def _filter_false_positives(results, full_text: str) -> list:
+    """Remove PII detections that match common K-1 form terminology."""
+    filtered = []
+    for r in results:
+        text_snippet = full_text[r.start:r.end].strip()
+        if text_snippet.lower() in K1_ALLOWLIST:
+            continue
+        filtered.append(r)
+    return filtered
+
+
 def _results_to_report(results, full_text: str) -> dict:
     """Convert analyzer results to a structured report dict."""
+    results = _filter_false_positives(results, full_text)
+
     entities_found: list[dict] = []
     entity_counts: dict[str, int] = {}
 
@@ -471,7 +490,7 @@ def _results_to_report(results, full_text: str) -> dict:
 
 
 @dg.asset(group_name="compliance", deps=["ocr_extracted_text"])
-def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
+def pii_detection_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Detect PII entities using three approaches: Presidio, GLiNER, and combined.
 
     Runs Presidio (spaCy NER + regex), GLiNER (zero-shot NER), and a hybrid of
@@ -479,10 +498,8 @@ def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
     The combined (Presidio+GLiNER) result is used as the primary PII report for
     downstream assets.
     """
-    staging = _run_staging(config.run_id)
     # Load OCR text
-    ocr_path = staging / "ocr_text.json"
-    ocr_data = json.loads(ocr_path.read_text())
+    ocr_data = s3.read_json(s3.staging_key(config.run_id, "ocr_text.json"))
     full_text = ocr_data["full_text"]
 
     entities_to_detect = [
@@ -507,8 +524,8 @@ def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
 
     # Save the combined report as the primary PII report (used by downstream assets)
     primary_report = {**combined_report, "analyzed_at": now}
-    staging_path = staging / "pii_report.json"
-    staging_path.write_text(json.dumps(primary_report, indent=2))
+    pii_key = s3.staging_key(config.run_id, "pii_report.json")
+    s3.write_json(pii_key, primary_report)
 
     # Save the full comparison
     comparison = {
@@ -518,8 +535,8 @@ def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
         "analyzed_at": now,
     }
 
-    comparison_path = staging / "pii_comparison.json"
-    comparison_path.write_text(json.dumps(comparison, indent=2))
+    comparison_key = s3.staging_key(config.run_id, "pii_comparison.json")
+    s3.write_json(comparison_key, comparison)
 
     # Build comparison table for metadata
     all_types = sorted(
@@ -543,8 +560,8 @@ def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
             "total_entities_presidio": dg.MetadataValue.int(presidio_report["total_entities"]),
             "total_entities_gliner": dg.MetadataValue.int(gliner_report["total_entities"]),
             "comparison": dg.MetadataValue.md(comparison_table),
-            "staging_path": dg.MetadataValue.path(str(staging_path)),
-            "comparison_path": dg.MetadataValue.path(str(comparison_path)),
+            "staging_key": dg.MetadataValue.text(pii_key),
+            "comparison_key": dg.MetadataValue.text(comparison_key),
         }
     )
 
@@ -555,7 +572,7 @@ def pii_detection_report(config: K1RunConfig) -> dg.MaterializeResult:
 
 
 @dg.asset(group_name="compliance", deps=["ocr_extracted_text", "pii_detection_report"])
-def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
+def sanitized_text(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Replace detected PII in the OCR text with instance-aware placeholder tokens.
 
     Each unique PII value gets a numbered placeholder (e.g., <PERSON_1>, <PERSON_2>)
@@ -564,10 +581,9 @@ def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
     """
     from presidio_analyzer import RecognizerResult
 
-    staging = _run_staging(config.run_id)
     # Load data
-    ocr_data = json.loads((staging / "ocr_text.json").read_text())
-    pii_report = json.loads((staging / "pii_report.json").read_text())
+    ocr_data = s3.read_json(s3.staging_key(config.run_id, "ocr_text.json"))
+    pii_report = s3.read_json(s3.staging_key(config.run_id, "pii_report.json"))
     full_text = ocr_data["full_text"]
 
     # Reconstruct RecognizerResult objects and extract original text spans
@@ -598,15 +614,33 @@ def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
             text_to_placeholder[key] = placeholder
             placeholder_to_original[placeholder] = original_text
 
-    # Replace entities in reverse position order to preserve offsets
-    sorted_entities = sorted(entities_with_text, key=lambda x: x[0].start, reverse=True)
-    sanitized = full_text
+    # Replace entities in reverse position order to preserve offsets.
+    # Skip overlapping entities — when two detections cover the same text,
+    # keep the one with the higher score (sorted first by score descending).
+    sorted_entities = sorted(
+        entities_with_text,
+        key=lambda x: (-x[0].score, x[0].start),
+    )
+
+    # Mark which character positions are already claimed
+    claimed: set[int] = set()
+    non_overlapping = []
     for result, original_text in sorted_entities:
+        span = set(range(result.start, result.end))
+        if span & claimed:
+            continue  # overlaps with a higher-scored entity
+        claimed |= span
+        non_overlapping.append((result, original_text))
+
+    # Now replace in reverse position order to preserve offsets
+    non_overlapping.sort(key=lambda x: x[0].start, reverse=True)
+    sanitized = full_text
+    for result, original_text in non_overlapping:
         key = (result.entity_type, original_text)
         placeholder = text_to_placeholder[key]
         sanitized = sanitized[:result.start] + placeholder + sanitized[result.end:]
 
-    replacement_count = len(entities_with_text)
+    replacement_count = len(non_overlapping)
 
     staging_payload = {
         "sanitized_text": sanitized,
@@ -618,8 +652,8 @@ def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
         "sanitized_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    staging_path = staging / "sanitized_text.json"
-    staging_path.write_text(json.dumps(staging_payload, indent=2))
+    staging_key = s3.staging_key(config.run_id, "sanitized_text.json")
+    s3.write_json(staging_key, staging_payload)
 
     preview = sanitized[:500] + ("..." if len(sanitized) > 500 else "")
 
@@ -628,7 +662,7 @@ def sanitized_text(config: K1RunConfig) -> dg.MaterializeResult:
             "replacements_made": dg.MetadataValue.int(replacement_count),
             "unique_entities": dg.MetadataValue.int(len(text_to_placeholder)),
             "sanitized_text_preview": dg.MetadataValue.md(f"```\n{preview}\n```"),
-            "staging_path": dg.MetadataValue.path(str(staging_path)),
+            "staging_key": dg.MetadataValue.text(staging_key),
         }
     )
 
@@ -685,7 +719,7 @@ def _serialize_messages(messages) -> list[dict]:
 
 
 @dg.asset(group_name="ai_analysis", deps=["sanitized_text"])
-def ai_structured_extraction(config: K1RunConfig) -> dg.MaterializeResult:
+def ai_structured_extraction(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Use PydanticAI with DeepSeek to extract structured K-1 data from sanitized text.
 
     Sends the PII-sanitized OCR text to DeepSeek (via PydanticAI) with a
@@ -694,9 +728,8 @@ def ai_structured_extraction(config: K1RunConfig) -> dg.MaterializeResult:
     """
     from pydantic_ai import Agent
 
-    staging = _run_staging(config.run_id)
     # Load sanitized text
-    sanitized_data = json.loads((staging / "sanitized_text.json").read_text())
+    sanitized_data = s3.read_json(s3.staging_key(config.run_id, "sanitized_text.json"))
     text = sanitized_data["sanitized_text"]
 
     system_prompt = """You are an expert tax accountant and financial data extraction specialist.
@@ -737,8 +770,8 @@ Be thorough and accurate. Look for all box numbers and their corresponding value
         },
     }
 
-    staging_path = staging / "structured_k1.json"
-    staging_path.write_text(json.dumps(staging_payload, indent=2))
+    staging_key = s3.staging_key(config.run_id, "structured_k1.json")
+    s3.write_json(staging_key, staging_payload)
 
     # Build summary for metadata
     non_null_fields = {k: v for k, v in extracted_dict.items() if v is not None}
@@ -749,7 +782,7 @@ Be thorough and accurate. Look for all box numbers and their corresponding value
         metadata={
             "fields_extracted": dg.MetadataValue.int(len(non_null_fields)),
             "extraction_summary": dg.MetadataValue.md(summary_md),
-            "staging_path": dg.MetadataValue.path(str(staging_path)),
+            "staging_key": dg.MetadataValue.text(staging_key),
         }
     )
 
@@ -760,7 +793,7 @@ Be thorough and accurate. Look for all box numbers and their corresponding value
 
 
 @dg.asset(group_name="ai_analysis", deps=["ai_structured_extraction", "sanitized_text"])
-def ai_financial_analysis(config: K1RunConfig) -> dg.MaterializeResult:
+def ai_financial_analysis(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Use PydanticAI with DeepSeek to perform financial analysis on the extracted K-1 data.
 
     Combines the structured extraction with the sanitized text to generate
@@ -769,10 +802,9 @@ def ai_financial_analysis(config: K1RunConfig) -> dg.MaterializeResult:
     """
     from pydantic_ai import Agent
 
-    staging = _run_staging(config.run_id)
     # Load inputs
-    structured_data = json.loads((staging / "structured_k1.json").read_text())
-    sanitized_data = json.loads((staging / "sanitized_text.json").read_text())
+    structured_data = s3.read_json(s3.staging_key(config.run_id, "structured_k1.json"))
+    sanitized_data = s3.read_json(s3.staging_key(config.run_id, "sanitized_text.json"))
 
     k1_json = json.dumps(structured_data["extracted_data"], indent=2)
     sanitized_text_content = sanitized_data["sanitized_text"]
@@ -823,8 +855,8 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
         },
     }
 
-    staging_path = staging / "financial_analysis.json"
-    staging_path.write_text(json.dumps(staging_payload, indent=2))
+    staging_key = s3.staging_key(config.run_id, "financial_analysis.json")
+    s3.write_json(staging_key, staging_payload)
 
     # Key findings for metadata
     findings = []
@@ -841,7 +873,7 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
             "key_findings": dg.MetadataValue.md(findings_md),
             "observations_count": dg.MetadataValue.int(len(analysis.key_observations)),
             "recommendations_count": dg.MetadataValue.int(len(analysis.tax_planning_recommendations)),
-            "staging_path": dg.MetadataValue.path(str(staging_path)),
+            "staging_key": dg.MetadataValue.text(staging_key),
         }
     )
 
@@ -852,7 +884,7 @@ For tax_planning_recommendations, provide 3-5 actionable recommendations."""
 
 
 @dg.asset(group_name="output", deps=["ai_structured_extraction", "ai_financial_analysis", "pii_detection_report"])
-def final_report(config: K1RunConfig) -> dg.MaterializeResult:
+def final_report(config: K1RunConfig, s3: S3Storage) -> dg.MaterializeResult:
     """Combine all pipeline outputs into final deliverable reports.
 
     Produces three output files:
@@ -860,29 +892,27 @@ def final_report(config: K1RunConfig) -> dg.MaterializeResult:
       - k1_summary.csv: Flat CSV summary of key financial fields
       - pipeline_results.json: Everything the React frontend needs
     """
-    staging = _run_staging(config.run_id)
     # Load all staging data
-    structured_data = json.loads((staging / "structured_k1.json").read_text())
-    analysis_data = json.loads((staging / "financial_analysis.json").read_text())
-    pii_report = json.loads((staging / "pii_report.json").read_text())
-    pii_comparison = json.loads((staging / "pii_comparison.json").read_text())
+    structured_data = s3.read_json(s3.staging_key(config.run_id, "structured_k1.json"))
+    analysis_data = s3.read_json(s3.staging_key(config.run_id, "financial_analysis.json"))
+    pii_report = s3.read_json(s3.staging_key(config.run_id, "pii_report.json"))
+    pii_comparison = s3.read_json(s3.staging_key(config.run_id, "pii_comparison.json"))
 
     k1_data = structured_data["extracted_data"]
     analysis = analysis_data["analysis"]
     now = datetime.now(timezone.utc)
 
     # Create a unique output directory per run based on source PDF and timestamp
-    raw_data = json.loads((staging / "raw_pdf_bytes.json").read_text())
+    raw_data = s3.read_json(s3.staging_key(config.run_id, "raw_pdf_bytes.json"))
     pdf_stem = Path(raw_data["file_name"]).stem
-    run_output = DATA_OUTPUT / f"{pdf_stem}_{now.strftime('%Y%m%d_%H%M%S')}"
-    run_output.mkdir(parents=True, exist_ok=True)
+    run_dirname = f"{pdf_stem}_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    now = now.isoformat()
+    now_iso = now.isoformat()
 
     # ---- 1. Full JSON Report ----
     full_report = {
         "report_title": "K-1 Tax Document Processing Report",
-        "generated_at": now,
+        "generated_at": now_iso,
         "k1_extracted_data": k1_data,
         "financial_analysis": analysis,
         "pii_detection_summary": {
@@ -900,11 +930,10 @@ def final_report(config: K1RunConfig) -> dg.MaterializeResult:
         },
     }
 
-    report_path = run_output / "k1_report.json"
-    report_path.write_text(json.dumps(full_report, indent=2))
+    report_key = s3.output_key(run_dirname, "k1_report.json")
+    s3.write_json(report_key, full_report)
 
     # ---- 2. CSV Summary ----
-    csv_path = run_output / "k1_summary.csv"
     csv_fields = [
         ("tax_year", k1_data.get("tax_year")),
         ("partnership_name", k1_data.get("partnership_name")),
@@ -930,16 +959,19 @@ def final_report(config: K1RunConfig) -> dg.MaterializeResult:
         ("net_taxable_income", analysis.get("net_taxable_income")),
     ]
 
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["field", "value"])
-        for field_name, field_value in csv_fields:
-            writer.writerow([field_name, field_value if field_value is not None else ""])
+    csv_buffer = io.StringIO()
+    writer = csv.writer(csv_buffer)
+    writer.writerow(["field", "value"])
+    for field_name, field_value in csv_fields:
+        writer.writerow([field_name, field_value if field_value is not None else ""])
+
+    csv_key = s3.output_key(run_dirname, "k1_summary.csv")
+    s3.write_text(csv_key, csv_buffer.getvalue(), content_type="text/csv")
 
     # ---- 3. Pipeline Results for React Frontend ----
     pipeline_results = {
         "pipeline_run": {
-            "generated_at": now,
+            "generated_at": now_iso,
             "status": "completed",
             "pipeline_version": "1.0.0",
         },
@@ -972,16 +1004,16 @@ def final_report(config: K1RunConfig) -> dg.MaterializeResult:
             "extraction_timestamp": structured_data.get("extracted_at"),
             "analysis_timestamp": analysis_data.get("analyzed_at"),
             "pii_scan_timestamp": pii_report.get("analyzed_at"),
-            "report_generated_at": now,
+            "report_generated_at": now_iso,
         },
         "output_files": {
-            "full_report": str(report_path),
-            "csv_summary": str(csv_path),
+            "full_report": report_key,
+            "csv_summary": csv_key,
         },
     }
 
-    pipeline_results_path = run_output / "pipeline_results.json"
-    pipeline_results_path.write_text(json.dumps(pipeline_results, indent=2))
+    pipeline_results_key = s3.output_key(run_dirname, "pipeline_results.json")
+    s3.write_json(pipeline_results_key, pipeline_results)
 
     # ---- 4. PDF Report (WeasyPrint) ----
     from k1_pipeline.defs.pdf_templates import render_single_report_html, generate_pdf
@@ -993,19 +1025,22 @@ def final_report(config: K1RunConfig) -> dg.MaterializeResult:
             "total_entities_detected": pii_report["total_entities"],
             "entities_redacted": pii_report["total_entities"],
         },
-        metadata={"report_generated_at": now},
+        metadata={"report_generated_at": now_iso},
     )
-    pdf_path = run_output / "k1_report.pdf"
-    generate_pdf(pdf_html, pdf_path)
 
-    pipeline_results["output_files"]["pdf_report"] = str(pdf_path)
-    pipeline_results_path.write_text(json.dumps(pipeline_results, indent=2))
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+        generate_pdf(pdf_html, Path(tmp_pdf.name))
+        pdf_key = s3.output_key(run_dirname, "k1_report.pdf")
+        s3.upload_from_file(tmp_pdf.name, pdf_key, content_type="application/pdf")
+
+    pipeline_results["output_files"]["pdf_report"] = pdf_key
+    s3.write_json(pipeline_results_key, pipeline_results)
 
     return dg.MaterializeResult(
         metadata={
-            "report_path": dg.MetadataValue.path(str(report_path)),
-            "csv_path": dg.MetadataValue.path(str(csv_path)),
-            "pipeline_results_path": dg.MetadataValue.path(str(pipeline_results_path)),
+            "report_key": dg.MetadataValue.text(report_key),
+            "csv_key": dg.MetadataValue.text(csv_key),
+            "pipeline_results_key": dg.MetadataValue.text(pipeline_results_key),
             "k1_fields_populated": dg.MetadataValue.int(
                 sum(1 for v in k1_data.values() if v is not None)
             ),
@@ -1013,6 +1048,6 @@ def final_report(config: K1RunConfig) -> dg.MaterializeResult:
             "recommendations": dg.MetadataValue.int(
                 len(analysis.get("tax_planning_recommendations", []))
             ),
-            "pdf_report": dg.MetadataValue.path(str(pdf_path)),
+            "pdf_report_key": dg.MetadataValue.text(pdf_key),
         }
     )

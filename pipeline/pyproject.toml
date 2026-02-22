@@ -17,6 +17,7 @@ dependencies = [
     "pypdfform>=4.6.0",
     "gliner",
     "weasyprint",
+    "boto3",
 ]
 
 [dependency-groups]
