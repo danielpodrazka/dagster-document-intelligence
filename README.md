@@ -4,6 +4,8 @@ A data pipeline built with **Dagster** that automatically ingests IRS Schedule K
 
 Built as an educational project demonstrating how to combine document processing, compliance automation, and AI-powered analysis in a modern data orchestration framework.
 
+This is a demo project. If you are processing large amounts of K-1s and need a production-grade document intelligence pipeline, contact me at build@daniep.com
+
 ## Presentation
 
 [![Presentation](https://img.youtube.com/vi/XCDDwKWYjhY/hqdefault.jpg)](https://www.youtube.com/watch?v=XCDDwKWYjhY)
